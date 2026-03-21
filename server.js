@@ -145,12 +145,7 @@ app.post('/api/chat', async (req, res) => {
 app.listen(process.env.PORT, () => {
   console.log(`Server ${process.env.PORT} portunda çalışıyor`);
 });
-```
 
----
-
-**4. `.gitignore`** - bu dosya yoksa oluştur, varsa `chatbot.db` satırını ekle:
-```
-node_modules/
-.env
-chatbot.db
+app.listen(process.env.PORT, () => {
+  console.log(`Server ${process.env.PORT} portunda çalışıyor`);
+});
