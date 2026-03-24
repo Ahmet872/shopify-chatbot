@@ -157,7 +157,3 @@ app.post('/api/chat', async (req, res) => {
 app.listen(process.env.PORT, () => {
   console.log(`Server ${process.env.PORT} portunda çalışıyor`);
 });
-
-app.listen(process.env.PORT, () => {
-  console.log(`Server ${process.env.PORT} portunda çalışıyor`);
-});
