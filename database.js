@@ -1,86 +1,63 @@
-const initSqlJs = require('sql.js');
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 
-const DB_PATH = path.join(__dirname, 'chatbot.db');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-let db = null;
-
-async function getDb() {
-  if (db) return db;
-  try {
-    const SQL = await initSqlJs();
-    if (fs.existsSync(DB_PATH)) {
-      const fileBuffer = fs.readFileSync(DB_PATH);
-      db = new SQL.Database(fileBuffer);
-    } else {
-      db = new SQL.Database();
-    }
-    db.run(`CREATE TABLE IF NOT EXISTS conversations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+async function init() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id SERIAL PRIMARY KEY,
       session_id TEXT NOT NULL,
       role TEXT NOT NULL,
       message TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    db.run(`CREATE TABLE IF NOT EXISTS sessions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT DEFAULT 'shopify',
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      id SERIAL PRIMARY KEY,
       session_id TEXT UNIQUE NOT NULL,
       store TEXT,
       first_message TEXT,
       message_count INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-    saveToFile();
-    console.log('Database başlatıldı ✓');
-    return db;
-  } catch (err) {
-    console.error('Database hata:', err);
-    throw err;
-  }
-}
-
-function saveToFile() {
-  try {
-    if (!db) return;
-    const data = db.export();
-    fs.writeFileSync(DB_PATH, Buffer.from(data));
-  } catch (err) {
-    console.error('Dosyaya yazma hatası:', err);
-  }
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  console.log('PostgreSQL bağlandı ✓');
 }
 
 async function saveMessage(sessionId, role, message, store = 'shopify') {
-  try {
-    const d = await getDb();
-    d.run('INSERT INTO conversations (session_id, role, message) VALUES (?, ?, ?)', [sessionId, role, message]);
-    d.run(`INSERT INTO sessions (session_id, store, first_message, message_count)
-      VALUES (?, ?, ?, 1)
-      ON CONFLICT(session_id) DO UPDATE SET
-        message_count = message_count + 1,
-        updated_at = CURRENT_TIMESTAMP`,
-      [sessionId, store, message]);
-    saveToFile();
-    console.log(`Mesaj kaydedildi: ${role} - ${sessionId}`);
-  } catch (err) {
-    console.error('saveMessage hata:', err);
-  }
+  await pool.query(
+    'INSERT INTO conversations (session_id, role, message, store) VALUES ($1, $2, $3, $4)',
+    [sessionId, role, message, store]
+  );
+  await pool.query(`
+    INSERT INTO sessions (session_id, store, first_message, message_count)
+    VALUES ($1, $2, $3, 1)
+    ON CONFLICT (session_id) DO UPDATE SET
+      message_count = sessions.message_count + 1,
+      updated_at = NOW()
+  `, [sessionId, store, message]);
 }
 
 async function getStats() {
-  try {
-    const d = await getDb();
-    const totalSessions = d.exec('SELECT COUNT(*) FROM sessions')[0]?.values[0][0] || 0;
-    const totalMessages = d.exec('SELECT COUNT(*) FROM conversations')[0]?.values[0][0] || 0;
-    const todaySessions = d.exec(`SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = DATE('now')`)[0]?.values[0][0] || 0;
-    const topResult = d.exec(`SELECT message, COUNT(*) as count FROM conversations WHERE role = 'user' GROUP BY message ORDER BY count DESC LIMIT 5`);
-    const topQuestions = topResult[0]?.values.map(r => ({ message: r[0], count: r[1] })) || [];
-    return { totalSessions, totalMessages, todaySessions, topQuestions };
-  } catch (err) {
-    console.error('getStats hata:', err);
-    return { totalSessions: 0, totalMessages: 0, todaySessions: 0, topQuestions: [] };
-  }
+  const totalSessions = await pool.query('SELECT COUNT(*) FROM sessions');
+  const totalMessages = await pool.query('SELECT COUNT(*) FROM conversations');
+  const todaySessions = await pool.query(`SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE`);
+  const topQuestions = await pool.query(`
+    SELECT message, COUNT(*) as count FROM conversations
+    WHERE role = 'user'
+    GROUP BY message ORDER BY count DESC LIMIT 5
+  `);
+  return {
+    totalSessions: parseInt(totalSessions.rows[0].count),
+    totalMessages: parseInt(totalMessages.rows[0].count),
+    todaySessions: parseInt(todaySessions.rows[0].count),
+    topQuestions: topQuestions.rows
+  };
 }
 
+init().catch(console.error);
 module.exports = { saveMessage, getStats };
