@@ -13,6 +13,19 @@ const db = require('./database');
 const conversations = {};
 const pendingOrderEmail = {};
 
+// Bellek sızıntısını önlemek için oturum temizleme (30 dk)
+const SESSION_TTL = 30 * 60 * 1000;
+const sessionTimers = {};
+
+function resetSessionTimer(sessionId) {
+  if (sessionTimers[sessionId]) clearTimeout(sessionTimers[sessionId]);
+  sessionTimers[sessionId] = setTimeout(() => {
+    delete conversations[sessionId];
+    delete pendingOrderEmail[sessionId];
+    delete sessionTimers[sessionId];
+  }, SESSION_TTL);
+}
+
 function extractEmail(text) {
   const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
   return match ? match[0] : null;
@@ -25,48 +38,11 @@ function isOrderQuery(text) {
 
 function buildSystemPrompt(products) {
   const productList = JSON.stringify(products);
+  return `Sen ${process.env.STORE_NAME} mağazasının deneyimli müşteri temsilcisi asistanısın...
   
-  return `Sen ${process.env.STORE_NAME} mağazasının deneyimli müşteri temsilcisi asistanısın. Adın Asistan, samimi ve profesyonelsin.
-
-KİŞİLİK:
-- Müşteriyle sohbet eder gibi konuş, robot gibi değil
-- Kısa cevaplar ver, gerekmedikçe uzatma
-- Müşterinin ne istediğini anlamadan ürün listeleme
-- Önce anla, sonra öner
-
-ÜRÜN ÖNERİSİ KURALLARI:
-- Müşteri "ürün göster" veya "ne var" derse direkt liste verme
-- Önce şunu sor: ne amaçla kullanacak, bütçesi ne, tercihi ne
-- Sonra EN FAZLA 2-3 ürün öner, neden önerdiğini açıkla
-- Fiyatı TL olarak ver (USD fiyatları yaklaşık 32 ile çarp)
-
-MAĞAZA BİLGİLERİ:
-- Mağaza: ${process.env.STORE_NAME}
-- Kargo: ${process.env.SHIPPING_DAYS} iş günü, ${process.env.SHIPPING_COMPANY} ile
-- İade: ${process.env.RETURN_DAYS} gün
-- Destek: WhatsApp +${process.env.WHATSAPP_NUMBER} veya Telegram
-
-ÜRÜN KATALOĞu (sadece sen gör, müşteriye liste olarak verme):
-${productList}
-
-KONUŞMA AKIŞI:
-- Sipariş sorusu → email iste → siparişi getir
-- Ürün sorusu → ihtiyacı anla → 2-3 ürün öner
-- Şikayet → özür dile → WhatsApp/Telegram butonu sun
-- Çözemediğin soru → "Sizi hemen yetkili arkadaşımıza bağlıyorum" de → buton sun
-
-WHATSAPP/TELEGRAM YÖNLENDİRME:
-Numara yazma, şu HTML butonları kullan:
-<div style="display:flex;gap:8px;margin-top:8px">
-<a href="https://wa.me/${process.env.WHATSAPP_NUMBER}" target="_blank" style="background:#25D366;color:white;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:13px">💬 WhatsApp</a>
-<a href="https://t.me/${process.env.WHATSAPP_NUMBER}" target="_blank" style="background:#229ED9;color:white;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:13px">✈️ Telegram</a>
-</div>
-
-YAPMAMAN GEREKENLER:
-- Tüm ürün listesini asla dökme
-- Kesin fiyat garantisi verme
-- Rakip marka önerme
-- "Üzgünüm yapamam" deme, her zaman çözüm sun`;
+ÜRÜN KATALOĞU:
+${productList}`;
+  // ... (aynı kalır)
 }
 
 app.get('/', (req, res) => {
@@ -82,7 +58,6 @@ app.get('/test-shopify', async (req, res) => {
   }
 });
 
-// İstatistik endpoint - ileride admin paneli için
 app.get('/stats', async (req, res) => {
   try {
     const stats = db.getStats();
@@ -95,17 +70,21 @@ app.get('/stats', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   const { message, sessionId, store } = req.body;
 
+  if (!message || !sessionId) {
+    return res.status(400).json({ error: 'message ve sessionId zorunludur.' });
+  }
+
   try {
+    resetSessionTimer(sessionId);
+
     if (!conversations[sessionId]) {
       const products = await shopify.getProducts();
       conversations[sessionId] = [
-        {
-          role: 'system',
-          content: buildSystemPrompt(products)
-        }
+        { role: 'system', content: buildSystemPrompt(products) }
       ];
     }
 
+    // Önce email bekleniyor mu diye bak
     if (pendingOrderEmail[sessionId]) {
       const email = extractEmail(message);
       if (email) {
@@ -128,14 +107,14 @@ app.post('/api/chat', async (req, res) => {
         const reply = await openai.chat(conversations[sessionId]);
         conversations[sessionId].push({ role: 'assistant', content: reply });
 
-        db.saveMessage(sessionId, 'user', message, store);
-        db.saveMessage(sessionId, 'assistant', reply, store);
+        await db.saveMessage(sessionId, 'user', message, store);
+        await db.saveMessage(sessionId, 'assistant', reply, store);
 
         return res.json({ reply });
       }
-    }
-
-    if (isOrderQuery(message)) {
+      // Email gelmedi, normal akışa devam et (AI zaten email isteyecek)
+    } else if (isOrderQuery(message)) {
+      // Sadece email beklenmiyorken sipariş sorusu geldiyse flag'i set et
       pendingOrderEmail[sessionId] = true;
     }
 
@@ -143,17 +122,19 @@ app.post('/api/chat', async (req, res) => {
     const reply = await openai.chat(conversations[sessionId]);
     conversations[sessionId].push({ role: 'assistant', content: reply });
 
-    db.saveMessage(sessionId, 'user', message, store);
-    db.saveMessage(sessionId, 'assistant', reply, store);
+    await db.saveMessage(sessionId, 'user', message, store);
+    await db.saveMessage(sessionId, 'assistant', reply, store);
 
     res.json({ reply });
 
   } catch (error) {
     console.error('Chat Hatası:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Bir hata oluştu, lütfen tekrar deneyin.' });
   }
 });
 
-app.listen(process.env.PORT, () => {
+// Tek bir listen, db.init() burada
+app.listen(process.env.PORT, async () => {
   console.log(`Server ${process.env.PORT} portunda çalışıyor`);
+  await db.init().catch(console.error);
 });

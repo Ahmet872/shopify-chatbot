@@ -1,12 +1,20 @@
 const { Pool } = require('pg');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+let pool = null;
+
+function getPool() {
+  if (!pool) {
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
+    });
+  }
+  return pool;
+}
 
 async function init() {
-  await pool.query(`
+  const p = getPool();
+  await p.query(`
     CREATE TABLE IF NOT EXISTS conversations (
       id SERIAL PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -29,11 +37,12 @@ async function init() {
 }
 
 async function saveMessage(sessionId, role, message, store = 'shopify') {
-  await pool.query(
+  const p = getPool();
+  await p.query(
     'INSERT INTO conversations (session_id, role, message, store) VALUES ($1, $2, $3, $4)',
     [sessionId, role, message, store]
   );
-  await pool.query(`
+  await p.query(`
     INSERT INTO sessions (session_id, store, first_message, message_count)
     VALUES ($1, $2, $3, 1)
     ON CONFLICT (session_id) DO UPDATE SET
@@ -43,10 +52,11 @@ async function saveMessage(sessionId, role, message, store = 'shopify') {
 }
 
 async function getStats() {
-  const totalSessions = await pool.query('SELECT COUNT(*) FROM sessions');
-  const totalMessages = await pool.query('SELECT COUNT(*) FROM conversations');
-  const todaySessions = await pool.query(`SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE`);
-  const topQuestions = await pool.query(`
+  const p = getPool();
+  const totalSessions = await p.query('SELECT COUNT(*) FROM sessions');
+  const totalMessages = await p.query('SELECT COUNT(*) FROM conversations');
+  const todaySessions = await p.query(`SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE`);
+  const topQuestions = await p.query(`
     SELECT message, COUNT(*) as count FROM conversations
     WHERE role = 'user'
     GROUP BY message ORDER BY count DESC LIMIT 5
@@ -59,5 +69,4 @@ async function getStats() {
   };
 }
 
-init().catch(console.error);
-module.exports = { saveMessage, getStats };
+module.exports = { saveMessage, getStats, init };
