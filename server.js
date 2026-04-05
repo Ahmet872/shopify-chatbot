@@ -60,7 +60,7 @@ app.get('/test-shopify', async (req, res) => {
 
 app.get('/stats', async (req, res) => {
   try {
-    const stats = db.getStats();
+    const stats = await db.getStats();
     res.json(stats);
   } catch (error) {
     res.status(500).json({ error: error.message });
