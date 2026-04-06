@@ -91,4 +91,21 @@ async function getSessionMessages(sessionId) {
   return result.rows;
 }
 
-module.exports = { saveMessage, getStats, init, getAllSessions, getSessionMessages };
+async function updateSessionEmail(sessionId, email) {
+  const p = getPool();
+  await p.query(`
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_email TEXT;
+    UPDATE sessions SET customer_email = $1 WHERE session_id = $2
+  `, [email, sessionId]);
+}
+
+async function updateSessionName(sessionId, name) {
+  const p = getPool();
+  await p.query(`
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_name TEXT;
+    UPDATE sessions SET customer_name = $1 WHERE session_id = $2
+  `, [name, sessionId]);
+}
+
+
+module.exports = { saveMessage, getStats, init, getAllSessions, getSessionMessages, updateSessionEmail, updateSessionName };

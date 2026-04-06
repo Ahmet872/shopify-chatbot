@@ -7,13 +7,13 @@ app.use(cors());
 app.use(express.json());
 
 const shopify = require('./shopify');
+const woocommerce = require('./woocommerce');
 const openai = require('./openai');
 const db = require('./database');
 
 const conversations = {};
 const pendingOrderEmail = {};
 
-// Bellek sızıntısını önlemek için oturum temizleme (30 dk)
 const SESSION_TTL = 30 * 60 * 1000;
 const sessionTimers = {};
 
@@ -36,7 +36,7 @@ function isOrderQuery(text) {
   return keywords.some(k => text.toLowerCase().includes(k));
 }
 
-function buildSystemPrompt(products) {
+function buildSystemPrompt(products, storeType) {
   const productList = JSON.stringify(products);
   return `Sen ${process.env.STORE_NAME} mağazasının deneyimli müşteri temsilcisi asistanısın. Samimi ve profesyonelsin.
 
@@ -54,9 +54,10 @@ KİŞİLİK:
 
 MAĞAZA BİLGİLERİ:
 - Mağaza: ${process.env.STORE_NAME}
+- Platform: ${storeType === 'woocommerce' ? 'WooCommerce' : 'Shopify'}
 - Kargo: ${process.env.SHIPPING_DAYS} iş günü, ${process.env.SHIPPING_COMPANY} ile
 - İade: ${process.env.RETURN_DAYS} gün
-- Destek: WhatsApp +${process.env.WHATSAPP_NUMBER} veya Telegram
+- Destek: WhatsApp veya Telegram
 
 ÜRÜN KATALOĞU (sadece sen gör, müşteriye liste olarak verme):
 ${productList}
@@ -80,6 +81,16 @@ YAPMAMAN GEREKENLER:
 - Üzgünüm yapamam deme, her zaman çözüm sun`;
 }
 
+async function getProducts(storeType) {
+  if (storeType === 'woocommerce') return await woocommerce.getProducts();
+  return await shopify.getProducts();
+}
+
+async function getOrders(storeType, email) {
+  if (storeType === 'woocommerce') return await woocommerce.getOrdersByEmail(email);
+  return await shopify.getOrdersByEmail(email);
+}
+
 app.get('/', (req, res) => {
   res.json({ message: 'Chatbot server çalışıyor!' });
 });
@@ -87,6 +98,15 @@ app.get('/', (req, res) => {
 app.get('/test-shopify', async (req, res) => {
   try {
     const products = await shopify.getProducts();
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/test-woo', async (req, res) => {
+  try {
+    const products = await woocommerce.getProducts();
     res.json(products);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -107,7 +127,8 @@ app.get('/admin', async (req, res) => {
       <tr onclick="loadConversation('${s.session_id}')" style="cursor:pointer">
         <td style="padding:12px 16px;font-size:13px;color:#636e72;font-family:monospace">${s.session_id.substring(0,16)}...</td>
         <td style="padding:12px 16px"><span style="background:${s.store === 'shopify' ? '#e8f4fd' : '#f0f9f0'};color:${s.store === 'shopify' ? '#2980b9' : '#27ae60'};padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${s.store}</span></td>
-        <td style="padding:12px 16px;font-size:13px;color:#2d3436;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.first_message || '-'}</td>
+        <td style="padding:12px 16px;font-size:13px;color:#2d3436">${s.customer_email ? `<span style="background:#ffeaa7;padding:3px 8px;border-radius:8px;font-size:12px">📧 ${s.customer_email}</span>` : '<span style="color:#aaa;font-size:12px">-</span>'}</td>
+        <td style="padding:12px 16px;font-size:13px;color:#2d3436;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.first_message || '-'}</td>
         <td style="padding:12px 16px;font-size:13px;text-align:center"><span style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${s.message_count}</span></td>
         <td style="padding:12px 16px;font-size:12px;color:#aaa">${new Date(s.updated_at).toLocaleString('tr-TR')}</td>
       </tr>
@@ -169,7 +190,6 @@ app.get('/admin', async (req, res) => {
   </div>
   <button class="refresh-btn" onclick="location.reload()">🔄 Yenile</button>
 </div>
-
 <div class="container">
   <div class="cards">
     <div class="card">
@@ -188,7 +208,6 @@ app.get('/admin', async (req, res) => {
       <div class="card-sub">Aktif konuşma</div>
     </div>
   </div>
-
   <div class="section">
     <div class="section-header">
       <h2>💬 Son Konuşmalar</h2>
@@ -199,6 +218,7 @@ app.get('/admin', async (req, res) => {
         <tr>
           <th>Session ID</th>
           <th>Platform</th>
+          <th>Email</th>
           <th>İlk Mesaj</th>
           <th style="text-align:center">Mesaj</th>
           <th>Son Aktivite</th>
@@ -207,7 +227,6 @@ app.get('/admin', async (req, res) => {
       <tbody>${sessionsHTML}</tbody>
     </table>
   </div>
-
   <div class="section">
     <div class="section-header"><h2>🔥 En Çok Sorulan Sorular</h2></div>
     ${stats.topQuestions.map((q, i) => {
@@ -221,7 +240,6 @@ app.get('/admin', async (req, res) => {
     }).join('')}
   </div>
 </div>
-
 <div class="modal" id="modal">
   <div class="modal-box">
     <div class="modal-header">
@@ -231,13 +249,11 @@ app.get('/admin', async (req, res) => {
     <div class="modal-body" id="modal-body"></div>
   </div>
 </div>
-
 <script>
 async function loadConversation(sessionId) {
   document.getElementById('modal-title').textContent = 'Konuşma: ' + sessionId.substring(0,16) + '...';
   document.getElementById('modal-body').innerHTML = '<div style="text-align:center;color:#aaa;padding:20px">Yükleniyor...</div>';
   document.getElementById('modal').classList.add('active');
-
   try {
     const res = await fetch('/admin/conversation/' + sessionId, {
       headers: { 'Authorization': 'Basic ' + btoa('admin:1234') }
@@ -254,11 +270,9 @@ async function loadConversation(sessionId) {
     document.getElementById('modal-body').innerHTML = '<div style="color:red">Hata oluştu</div>';
   }
 }
-
 function closeModal() {
   document.getElementById('modal').classList.remove('active');
 }
-
 document.getElementById('modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
@@ -293,7 +307,7 @@ app.get('/stats', async (req, res) => {
 });
 
 app.post('/api/chat', async (req, res) => {
-  const { message, sessionId, store } = req.body;
+  const { message, sessionId, store = 'shopify' } = req.body;
 
   if (!message || !sessionId) {
     return res.status(400).json({ error: 'message ve sessionId zorunludur.' });
@@ -303,49 +317,51 @@ app.post('/api/chat', async (req, res) => {
     resetSessionTimer(sessionId);
 
     if (!conversations[sessionId]) {
-      const products = await shopify.getProducts();
-      conversations[sessionId] = [
-        { role: 'system', content: buildSystemPrompt(products) }
-      ];
+      const products = await getProducts(store);
+      conversations[sessionId] = {
+        storeType: store,
+        messages: [{ role: 'system', content: buildSystemPrompt(products, store) }]
+      };
     }
 
-    // Önce email bekleniyor mu diye bak
+    const storeType = conversations[sessionId].storeType;
+    const msgs = conversations[sessionId].messages;
+
     if (pendingOrderEmail[sessionId]) {
       const email = extractEmail(message);
       if (email) {
         pendingOrderEmail[sessionId] = false;
-        const orders = await shopify.getOrdersByEmail(email);
+        await db.updateSessionEmail(sessionId, email);
+        const orders = await getOrders(storeType, email);
 
         let orderText;
         if (orders.length === 0) {
           orderText = `${email} adresine ait sipariş bulunamadı.`;
         } else {
           orderText = orders.map(o =>
-            `Sipariş #${o.id} | Tarih: ${o.date} | Durum: ${o.fulfillment || 'Hazırlanıyor'} | Kargo Takip: ${o.tracking} | Toplam: ${o.total} | Ürünler: ${o.items.join(', ')}`
+            `Sipariş #${o.id} | Tarih: ${o.date} | Durum: ${o.fulfillment || o.status || 'Hazırlanıyor'} | Kargo Takip: ${o.tracking} | Toplam: ${o.total} | Ürünler: ${o.items.join(', ')}`
           ).join('\n');
         }
 
-        conversations[sessionId].push({ role: 'user', content: `Email: ${email}` });
-        conversations[sessionId].push({ role: 'system', content: `Sipariş bilgileri:\n${orderText}` });
-        conversations[sessionId].push({ role: 'user', content: 'Bu sipariş bilgilerini müşteriye güzel bir şekilde açıkla.' });
+        msgs.push({ role: 'user', content: `Email: ${email}` });
+        msgs.push({ role: 'system', content: `Sipariş bilgileri:\n${orderText}` });
+        msgs.push({ role: 'user', content: 'Bu sipariş bilgilerini müşteriye güzel bir şekilde açıkla.' });
 
-        const reply = await openai.chat(conversations[sessionId]);
-        conversations[sessionId].push({ role: 'assistant', content: reply });
+        const reply = await openai.chat(msgs);
+        msgs.push({ role: 'assistant', content: reply });
 
         await db.saveMessage(sessionId, 'user', message, store);
         await db.saveMessage(sessionId, 'assistant', reply, store);
 
         return res.json({ reply });
       }
-      // Email gelmedi, normal akışa devam et (AI zaten email isteyecek)
     } else if (isOrderQuery(message)) {
-      // Sadece email beklenmiyorken sipariş sorusu geldiyse flag'i set et
       pendingOrderEmail[sessionId] = true;
     }
 
-    conversations[sessionId].push({ role: 'user', content: message });
-    const reply = await openai.chat(conversations[sessionId]);
-    conversations[sessionId].push({ role: 'assistant', content: reply });
+    msgs.push({ role: 'user', content: message });
+    const reply = await openai.chat(msgs);
+    msgs.push({ role: 'assistant', content: reply });
 
     await db.saveMessage(sessionId, 'user', message, store);
     await db.saveMessage(sessionId, 'assistant', reply, store);
@@ -358,7 +374,6 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
-// Tek bir listen, db.init() burada
 app.listen(process.env.PORT, async () => {
   console.log(`Server ${process.env.PORT} portunda çalışıyor`);
   await db.init().catch(console.error);
