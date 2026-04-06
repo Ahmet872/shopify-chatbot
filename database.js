@@ -69,4 +69,26 @@ async function getStats() {
   };
 }
 
-module.exports = { saveMessage, getStats, init };
+async function getAllSessions() {
+  const p = getPool();
+  const result = await p.query(`
+    SELECT session_id, store, first_message, message_count, created_at, updated_at
+    FROM sessions
+    ORDER BY updated_at DESC
+    LIMIT 50
+  `);
+  return result.rows;
+}
+
+async function getSessionMessages(sessionId) {
+  const p = getPool();
+  const result = await p.query(`
+    SELECT role, message, created_at
+    FROM conversations
+    WHERE session_id = $1
+    ORDER BY created_at ASC
+  `, [sessionId]);
+  return result.rows;
+}
+
+module.exports = { saveMessage, getStats, init, getAllSessions, getSessionMessages };

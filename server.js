@@ -99,6 +99,18 @@ app.get('/admin', async (req, res) => {
   }
   try {
     const stats = await db.getStats();
+    const sessions = await db.getAllSessions();
+
+    const sessionsHTML = sessions.map(s => `
+      <tr onclick="loadConversation('${s.session_id}')" style="cursor:pointer">
+        <td style="padding:12px 16px;font-size:13px;color:#636e72;font-family:monospace">${s.session_id.substring(0,16)}...</td>
+        <td style="padding:12px 16px"><span style="background:${s.store === 'shopify' ? '#e8f4fd' : '#f0f9f0'};color:${s.store === 'shopify' ? '#2980b9' : '#27ae60'};padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${s.store}</span></td>
+        <td style="padding:12px 16px;font-size:13px;color:#2d3436;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.first_message || '-'}</td>
+        <td style="padding:12px 16px;font-size:13px;text-align:center"><span style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${s.message_count}</span></td>
+        <td style="padding:12px 16px;font-size:12px;color:#aaa">${new Date(s.updated_at).toLocaleString('tr-TR')}</td>
+      </tr>
+    `).join('');
+
     res.send(`<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -108,32 +120,54 @@ app.get('/admin', async (req, res) => {
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; min-height: 100vh; }
-  .header { background: linear-gradient(135deg, #667eea, #764ba2); padding: 24px 32px; color: white; }
-  .header h1 { font-size: 24px; font-weight: 700; }
-  .header p { opacity: 0.85; margin-top: 4px; font-size: 14px; }
-  .container { max-width: 1100px; margin: 32px auto; padding: 0 24px; }
-  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 32px; }
-  .card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-  .card-label { font-size: 13px; color: #888; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
-  .card-value { font-size: 42px; font-weight: 700; margin-top: 8px; background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-  .card-sub { font-size: 13px; color: #aaa; margin-top: 4px; }
-  .section { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); margin-bottom: 20px; }
-  .section h2 { font-size: 16px; font-weight: 700; color: #2d3436; margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
-  .question-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f0f0; }
-  .question-row:last-child { border-bottom: none; }
-  .question-text { font-size: 14px; color: #2d3436; flex: 1; }
-  .question-count { background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; margin-left: 16px; }
-  .bar-container { flex: 1; margin: 0 16px; background: #f0f0f0; border-radius: 4px; height: 6px; }
-  .bar { height: 6px; border-radius: 4px; background: linear-gradient(135deg, #667eea, #764ba2); }
-  .refresh-btn { background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; padding: 10px 20px; border-radius: 20px; cursor: pointer; font-size: 14px; font-weight: 600; }
-  .footer { text-align: center; color: #aaa; font-size: 12px; padding: 24px; }
+  .header { background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px 32px; color: white; display:flex; justify-content:space-between; align-items:center; }
+  .header h1 { font-size: 22px; font-weight: 700; }
+  .header p { opacity: 0.85; font-size: 13px; margin-top:2px; }
+  .container { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+  .card { background: white; border-radius: 14px; padding: 20px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+  .card-label { font-size: 12px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .card-value { font-size: 38px; font-weight: 700; margin-top: 6px; background: linear-gradient(135deg, #667eea, #764ba2); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .card-sub { font-size: 12px; color: #aaa; margin-top: 2px; }
+  .section { background: white; border-radius: 14px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); margin-bottom: 20px; overflow:hidden; }
+  .section-header { padding: 18px 24px; border-bottom: 1px solid #f0f0f0; display:flex; justify-content:space-between; align-items:center; }
+  .section-header h2 { font-size: 15px; font-weight: 700; color: #2d3436; }
+  table { width: 100%; border-collapse: collapse; }
+  thead { background: #f7f8fc; }
+  th { padding: 10px 16px; text-align: left; font-size: 12px; color: #888; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  tr:hover { background: #f7f8fc; }
+  .modal { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; }
+  .modal.active { display:flex; }
+  .modal-box { background:white; border-radius:20px; width:580px; max-height:80vh; display:flex; flex-direction:column; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .modal-header { padding:20px 24px; border-bottom:1px solid #f0f0f0; display:flex; justify-content:space-between; align-items:center; }
+  .modal-header h3 { font-size:15px; font-weight:700; }
+  .modal-close { background:none; border:none; font-size:20px; cursor:pointer; color:#888; }
+  .modal-body { flex:1; overflow-y:auto; padding:20px 24px; display:flex; flex-direction:column; gap:12px; }
+  .chat-msg { display:flex; gap:8px; align-items:flex-end; }
+  .chat-msg.user { flex-direction:row-reverse; }
+  .chat-bubble { max-width:75%; padding:10px 14px; border-radius:16px; font-size:13px; line-height:1.5; }
+  .chat-bubble.user { background:linear-gradient(135deg,#667eea,#764ba2); color:white; border-bottom-right-radius:4px; }
+  .chat-bubble.assistant { background:#f0f2f5; color:#2d3436; border-bottom-left-radius:4px; }
+  .chat-time { font-size:11px; color:#aaa; padding:0 4px; }
+  .question-row { display:flex; align-items:center; padding:12px 24px; border-bottom:1px solid #f0f0f0; }
+  .question-row:last-child { border-bottom:none; }
+  .q-num { color:#aaa; font-size:13px; width:24px; }
+  .q-text { flex:1; font-size:13px; color:#2d3436; }
+  .q-bar-wrap { width:200px; margin:0 16px; background:#f0f0f0; border-radius:4px; height:5px; }
+  .q-bar { height:5px; border-radius:4px; background:linear-gradient(135deg,#667eea,#764ba2); }
+  .q-count { background:linear-gradient(135deg,#667eea,#764ba2); color:white; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:700; }
+  .refresh-btn { background:linear-gradient(135deg,#667eea,#764ba2); color:white; border:none; padding:8px 18px; border-radius:20px; cursor:pointer; font-size:13px; font-weight:600; }
 </style>
 </head>
 <body>
 <div class="header">
-  <h1>🤖 Chatbot Admin Panel</h1>
-  <p>Son güncelleme: ${new Date().toLocaleString('tr-TR')}</p>
+  <div>
+    <h1>🤖 Chatbot Admin Panel</h1>
+    <p>Son güncelleme: ${new Date().toLocaleString('tr-TR')}</p>
+  </div>
+  <button class="refresh-btn" onclick="location.reload()">🔄 Yenile</button>
 </div>
+
 <div class="container">
   <div class="cards">
     <div class="card">
@@ -154,44 +188,94 @@ app.get('/admin', async (req, res) => {
   </div>
 
   <div class="section">
-    <h2>🔥 En Çok Sorulan Sorular</h2>
-    ${stats.topQuestions.length === 0 ? '<p style="color:#aaa;font-size:14px">Henüz veri yok</p>' : 
-      stats.topQuestions.map((q, i) => {
-        const maxCount = stats.topQuestions[0].count;
-        const pct = Math.round((q.count / maxCount) * 100);
-        return `<div class="question-row">
-          <span style="color:#aaa;font-size:13px;width:24px">${i+1}</span>
-          <span class="question-text">${q.message}</span>
-          <div class="bar-container"><div class="bar" style="width:${pct}%"></div></div>
-          <span class="question-count">${q.count}x</span>
-        </div>`;
-      }).join('')
-    }
+    <div class="section-header">
+      <h2>💬 Son Konuşmalar</h2>
+      <span style="font-size:12px;color:#aaa">Detay için tıkla</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Session ID</th>
+          <th>Platform</th>
+          <th>İlk Mesaj</th>
+          <th style="text-align:center">Mesaj</th>
+          <th>Son Aktivite</th>
+        </tr>
+      </thead>
+      <tbody>${sessionsHTML}</tbody>
+    </table>
   </div>
 
   <div class="section">
-    <h2>📊 Özet</h2>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      <div style="background:#f7f8fc;border-radius:12px;padding:16px">
-        <div style="font-size:12px;color:#888;margin-bottom:4px">Mesaj Başına Ortalama</div>
-        <div style="font-size:24px;font-weight:700;color:#667eea">${stats.totalSessions > 0 ? Math.round(stats.totalMessages / stats.totalSessions) : 0}</div>
-        <div style="font-size:12px;color:#aaa">mesaj/konuşma</div>
-      </div>
-      <div style="background:#f7f8fc;border-radius:12px;padding:16px">
-        <div style="font-size:12px;color:#888;margin-bottom:4px">Bugün Oranı</div>
-        <div style="font-size:24px;font-weight:700;color:#764ba2">${stats.totalSessions > 0 ? Math.round((stats.todaySessions / stats.totalSessions) * 100) : 0}%</div>
-        <div style="font-size:12px;color:#aaa">bugünkü aktivite</div>
-      </div>
-    </div>
-  </div>
-
-  <div style="text-align:center">
-    <button class="refresh-btn" onclick="location.reload()">🔄 Yenile</button>
+    <div class="section-header"><h2>🔥 En Çok Sorulan Sorular</h2></div>
+    ${stats.topQuestions.map((q, i) => {
+      const pct = Math.round((q.count / stats.topQuestions[0].count) * 100);
+      return `<div class="question-row">
+        <span class="q-num">${i+1}</span>
+        <span class="q-text">${q.message}</span>
+        <div class="q-bar-wrap"><div class="q-bar" style="width:${pct}%"></div></div>
+        <span class="q-count">${q.count}x</span>
+      </div>`;
+    }).join('')}
   </div>
 </div>
-<div class="footer">Chatbot Admin Panel • ${new Date().getFullYear()}</div>
+
+<div class="modal" id="modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="modal-title">Konuşma Detayı</h3>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+async function loadConversation(sessionId) {
+  document.getElementById('modal-title').textContent = 'Konuşma: ' + sessionId.substring(0,16) + '...';
+  document.getElementById('modal-body').innerHTML = '<div style="text-align:center;color:#aaa;padding:20px">Yükleniyor...</div>';
+  document.getElementById('modal').classList.add('active');
+
+  try {
+    const res = await fetch('/admin/conversation/' + sessionId, {
+      headers: { 'Authorization': 'Basic ' + btoa('admin:1234') }
+    });
+    const messages = await res.json();
+    const html = messages.map(m => \`
+      <div class="chat-msg \${m.role === 'user' ? 'user' : ''}">
+        <div class="chat-bubble \${m.role === 'user' ? 'user' : 'assistant'}">\${m.message}</div>
+        <div class="chat-time">\${new Date(m.created_at).toLocaleTimeString('tr-TR', {hour:'2-digit',minute:'2-digit'})}</div>
+      </div>
+    \`).join('');
+    document.getElementById('modal-body').innerHTML = html;
+  } catch(e) {
+    document.getElementById('modal-body').innerHTML = '<div style="color:red">Hata oluştu</div>';
+  }
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('active');
+}
+
+document.getElementById('modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+</script>
 </body>
 </html>`);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/admin/conversation/:sessionId', async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== 'Basic ' + Buffer.from('admin:1234').toString('base64')) {
+    return res.status(401).send('Yetkisiz');
+  }
+  try {
+    const messages = await db.getSessionMessages(req.params.sessionId);
+    res.json(messages);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
