@@ -68,8 +68,10 @@ KONUŞMA AKIŞI:
 - Çözemediğin soru → WhatsApp/Telegram butonu sun
 
 WHATSAPP/TELEGRAM YÖNLENDİRME:
-Numara yazma, şu HTML butonları kullan:
-<div style="display:flex;gap:8px;margin-top:8px"><a href="https://wa.me/${process.env.WHATSAPP_NUMBER}" target="_blank" style="background:#25D366;color:white;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:13px">💬 WhatsApp</a><a href="https://t.me/${process.env.WHATSAPP_NUMBER}" target="_blank" style="background:#229ED9;color:white;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:13px">✈️ Telegram</a></div>
+Müşteri insan desteği, yetkili, sorumlu veya mağaza sahibiyle görüşmek istediğinde şu mesajı ver:
+"Talebiniz alındı! Müşteri temsilcimiz en kısa sürede sizinle iletişime geçecektir. İsterseniz aşağıdaki kanallardan da ulaşabilirsiniz:"
+Sonra şu HTML butonları ekle:
+<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><a href="https://wa.me/${process.env.WHATSAPP_NUMBER}?text=Merhaba,%20chatbot%20üzerinden%20destek%20talep%20ediyorum" target="_blank" style="background:#25D366;color:white;padding:9px 18px;border-radius:20px;text-decoration:none;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px">💬 WhatsApp ile Yaz</a><a href="https://t.me/${process.env.WHATSAPP_NUMBER}" target="_blank" style="background:#229ED9;color:white;padding:9px 18px;border-radius:20px;text-decoration:none;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px">✈️ Telegram ile Yaz</a></div>
 
 YAPMAMAN GEREKENLER:
 - Tüm ürün listesini asla dökme
