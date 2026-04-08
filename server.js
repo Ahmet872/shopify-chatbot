@@ -338,9 +338,12 @@ app.post('/api/chat', async (req, res) => {
         if (orders.length === 0) {
           orderText = `${email} adresine ait sipariş bulunamadı.`;
         } else {
-          orderText = orders.map(o =>
-            `Sipariş #${o.id} | Tarih: ${o.date} | Durum: ${o.fulfillment || o.status || 'Hazırlanıyor'} | Kargo Takip: ${o.tracking} | Toplam: ${o.total} | Ürünler: ${o.items.join(', ')}`
-          ).join('\n');
+          orderText = orders.map(o => {
+            const trackingLink = o.tracking && o.tracking !== 'Henüz yok'
+              ? `\nKargo Takip Linki: <a href="https://www.yurticikargo.com/tr/online-islemler/gonderi-sorgula?code=${o.tracking}" target="_blank" style="display:inline-block;margin-top:8px;background:#e74c3c;color:white;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:13px;font-weight:600">📦 Kargonu Takip Et</a>`
+              : '\nKargo: Henüz kargoya verilmedi';
+            return `Sipariş #${o.id} | Tarih: ${o.date} | Durum: ${o.fulfillment || o.status || 'Hazırlanıyor'} | Takip No: ${o.tracking} | Toplam: ${o.total} | Ürünler: ${o.items.join(', ')}${trackingLink}`;
+          }).join('\n\n');
         }
 
         msgs.push({ role: 'user', content: `Email: ${email}` });
