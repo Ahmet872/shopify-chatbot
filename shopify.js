@@ -15,7 +15,8 @@ async function getProducts() {
     id: p.id,
     title: p.title,
     price: p.variants[0].price,
-    stock: p.variants[0].inventory_quantity
+    stock: p.variants[0].inventory_quantity,
+    image: p.images?.[0]?.src || null
   }));
 }
 
