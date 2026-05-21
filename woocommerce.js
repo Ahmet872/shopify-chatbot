@@ -1,17 +1,20 @@
 const axios = require('axios');
-require('dotenv').config();
+const https = require('https');
 
-const wooClient = axios.create({
-  baseURL: `${process.env.WC_URL}/wp-json/wc/v3`,
-  auth: {
-    username: process.env.WC_KEY,
-    password: process.env.WC_SECRET
-  },
-  httpsAgent: new (require('https').Agent)({ rejectUnauthorized: false })
-});
+function createClient(tenant) {
+  return axios.create({
+    baseURL: `${tenant.wc_url}/wp-json/wc/v3`,
+    auth: {
+      username: tenant.wc_key,
+      password: tenant.wc_secret
+    },
+    httpsAgent: new https.Agent({ rejectUnauthorized: false })
+  });
+}
 
-async function getProducts() {
-  const response = await wooClient.get('/products?per_page=10&status=publish');
+async function getProducts(tenant) {
+  const client = createClient(tenant);
+  const response = await client.get('/products?per_page=10&status=publish');
   return response.data.map(p => ({
     id: p.id,
     title: p.name,
@@ -21,8 +24,9 @@ async function getProducts() {
   }));
 }
 
-async function getOrdersByEmail(email) {
-  const response = await wooClient.get(`/orders?search=${email}&per_page=5`);
+async function getOrdersByEmail(tenant, email) {
+  const client = createClient(tenant);
+  const response = await client.get(`/orders?search=${email}&per_page=5`);
   return response.data.map(o => ({
     id: o.number,
     date: o.date_created?.split('T')[0],

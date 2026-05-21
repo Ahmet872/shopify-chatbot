@@ -1,5 +1,4 @@
 const { Pool } = require('pg');
-
 let pool = null;
 
 function getPool() {
@@ -14,53 +13,149 @@ function getPool() {
 
 async function init() {
   const p = getPool();
+
   await p.query(`
+    CREATE TABLE IF NOT EXISTS tenants (
+      id SERIAL PRIMARY KEY,
+      tenant_id TEXT UNIQUE NOT NULL,
+      platform TEXT NOT NULL DEFAULT 'shopify',
+      store_name TEXT,
+      store_language TEXT DEFAULT 'Türkçe',
+      shopify_url TEXT,
+      shopify_token TEXT,
+      wc_url TEXT,
+      wc_key TEXT,
+      wc_secret TEXT,
+      openai_key TEXT,
+      whatsapp TEXT,
+      shipping_days TEXT DEFAULT '3-5',
+      shipping_company TEXT DEFAULT 'Yurtiçi Kargo',
+      return_days TEXT DEFAULT '14',
+      admin_password TEXT DEFAULT '1234',
+      active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS conversations (
       id SERIAL PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT NOT NULL,
       role TEXT NOT NULL,
       message TEXT NOT NULL,
       store TEXT DEFAULT 'shopify',
       created_at TIMESTAMP DEFAULT NOW()
     );
+
     CREATE TABLE IF NOT EXISTS sessions (
       id SERIAL PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
       session_id TEXT UNIQUE NOT NULL,
       store TEXT,
       first_message TEXT,
       message_count INTEGER DEFAULT 0,
+      customer_email TEXT,
+      customer_name TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  // Mevcut tablolara tenant_id kolonu ekle (migration - zaten varsa hata vermez)
+  await p.query(`
+    ALTER TABLE conversations ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_email TEXT;
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_name TEXT;
+  `).catch(() => {}); // Kolon zaten varsa sessizce geç
+
   console.log('PostgreSQL bağlandı ✓');
 }
 
-async function saveMessage(sessionId, role, message, store = 'shopify') {
+async function getTenant(tenantId) {
+  const p = getPool();
+  const result = await p.query(
+    'SELECT * FROM tenants WHERE tenant_id = $1 AND active = TRUE',
+    [tenantId]
+  );
+  return result.rows[0] || null;
+}
+
+async function getAllTenants() {
+  const p = getPool();
+  const result = await p.query(
+    'SELECT * FROM tenants WHERE active = TRUE ORDER BY created_at ASC'
+  );
+  return result.rows;
+}
+
+async function createTenant(data) {
+  const p = getPool();
+  const result = await p.query(`
+    INSERT INTO tenants (
+      tenant_id, platform, store_name, store_language,
+      shopify_url, shopify_token,
+      wc_url, wc_key, wc_secret,
+      openai_key, whatsapp,
+      shipping_days, shipping_company, return_days, admin_password
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+    ON CONFLICT (tenant_id) DO UPDATE SET
+      platform = EXCLUDED.platform,
+      store_name = EXCLUDED.store_name,
+      store_language = EXCLUDED.store_language,
+      shopify_url = EXCLUDED.shopify_url,
+      shopify_token = EXCLUDED.shopify_token,
+      wc_url = EXCLUDED.wc_url,
+      wc_key = EXCLUDED.wc_key,
+      wc_secret = EXCLUDED.wc_secret,
+      openai_key = EXCLUDED.openai_key,
+      whatsapp = EXCLUDED.whatsapp,
+      shipping_days = EXCLUDED.shipping_days,
+      shipping_company = EXCLUDED.shipping_company,
+      return_days = EXCLUDED.return_days,
+      admin_password = EXCLUDED.admin_password
+    RETURNING *
+  `, [
+    data.tenant_id, data.platform, data.store_name, data.store_language || 'Türkçe',
+    data.shopify_url || null, data.shopify_token || null,
+    data.wc_url || null, data.wc_key || null, data.wc_secret || null,
+    data.openai_key || null, data.whatsapp || null,
+    data.shipping_days || '3-5', data.shipping_company || 'Yurtiçi Kargo',
+    data.return_days || '14', data.admin_password || '1234'
+  ]);
+  return result.rows[0];
+}
+
+async function saveMessage(tenantId, sessionId, role, message, store = 'shopify') {
   const p = getPool();
   await p.query(
-    'INSERT INTO conversations (session_id, role, message, store) VALUES ($1, $2, $3, $4)',
-    [sessionId, role, message, store]
+    'INSERT INTO conversations (tenant_id, session_id, role, message, store) VALUES ($1, $2, $3, $4, $5)',
+    [tenantId, sessionId, role, message, store]
   );
   await p.query(`
-    INSERT INTO sessions (session_id, store, first_message, message_count)
-    VALUES ($1, $2, $3, 1)
+    INSERT INTO sessions (tenant_id, session_id, store, first_message, message_count)
+    VALUES ($1, $2, $3, $4, 1)
     ON CONFLICT (session_id) DO UPDATE SET
       message_count = sessions.message_count + 1,
       updated_at = NOW()
-  `, [sessionId, store, message]);
+  `, [tenantId, sessionId, store, message]);
 }
 
-async function getStats() {
+async function getStats(tenantId = null) {
   const p = getPool();
-  const totalSessions = await p.query('SELECT COUNT(*) FROM sessions');
-  const totalMessages = await p.query('SELECT COUNT(*) FROM conversations');
-  const todaySessions = await p.query(`SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE`);
+  const filter = tenantId ? `WHERE tenant_id = '${tenantId}'` : '';
+  const filterAnd = tenantId ? `AND tenant_id = '${tenantId}'` : '';
+
+  const totalSessions = await p.query(`SELECT COUNT(*) FROM sessions ${filter}`);
+  const totalMessages = await p.query(`SELECT COUNT(*) FROM conversations ${filter}`);
+  const todaySessions = await p.query(
+    `SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE ${filterAnd}`
+  );
   const topQuestions = await p.query(`
     SELECT message, COUNT(*) as count FROM conversations
-    WHERE role = 'user'
+    WHERE role = 'user' ${filterAnd}
     GROUP BY message ORDER BY count DESC LIMIT 5
   `);
+
   return {
     totalSessions: parseInt(totalSessions.rows[0].count),
     totalMessages: parseInt(totalMessages.rows[0].count),
@@ -69,14 +164,19 @@ async function getStats() {
   };
 }
 
-async function getAllSessions() {
+async function getAllSessions(tenantId = null) {
   const p = getPool();
+  const filter = tenantId ? `WHERE tenant_id = $1` : '';
+  const params = tenantId ? [tenantId] : [];
+
   const result = await p.query(`
-    SELECT session_id, store, first_message, message_count, created_at, updated_at
+    SELECT session_id, tenant_id, store, first_message, message_count,
+           created_at, updated_at, customer_email, customer_name
     FROM sessions
+    ${filter}
     ORDER BY updated_at DESC
     LIMIT 50
-  `);
+  `, params);
   return result.rows;
 }
 
@@ -93,19 +193,14 @@ async function getSessionMessages(sessionId) {
 
 async function updateSessionEmail(sessionId, email) {
   const p = getPool();
-  await p.query(`
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_email TEXT;
-    UPDATE sessions SET customer_email = $1 WHERE session_id = $2
-  `, [email, sessionId]);
+  await p.query(
+    'UPDATE sessions SET customer_email = $1 WHERE session_id = $2',
+    [email, sessionId]
+  );
 }
 
-async function updateSessionName(sessionId, name) {
-  const p = getPool();
-  await p.query(`
-    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_name TEXT;
-    UPDATE sessions SET customer_name = $1 WHERE session_id = $2
-  `, [name, sessionId]);
-}
-
-
-module.exports = { saveMessage, getStats, init, getAllSessions, getSessionMessages, updateSessionEmail, updateSessionName };
+module.exports = {
+  init, getTenant, getAllTenants, createTenant,
+  saveMessage, getStats, getAllSessions,
+  getSessionMessages, updateSessionEmail
+};
