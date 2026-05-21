@@ -12,14 +12,41 @@ function createClient(tenant) {
 
 async function getProducts(tenant) {
   const client = createClient(tenant);
-  const response = await client.get('/products.json?limit=10');
-  return response.data.products.map(p => ({
-    id: p.id,
-    title: p.title,
-    price: p.variants[0].price,
-    stock: p.variants[0].inventory_quantity,
-    image: p.images?.[0]?.src || null
-  }));
+  const response = await client.get('/products.json?limit=20');
+  
+  return response.data.products.map(p => {
+    // Varyantları işle
+    const variants = p.variants.map(v => ({
+      id: v.id,
+      title: v.title,           // "XL / Kırmızı" gibi
+      price: v.price,
+      stock: v.inventory_quantity,
+      sku: v.sku || null
+    }));
+
+    // Benzersiz seçenekleri çıkar (beden, renk vb.)
+    const options = p.options.map(o => ({
+      name: o.name,             // "Beden", "Renk"
+      values: o.values          // ["S", "M", "L", "XL"]
+    }));
+
+    // Açıklamayı temizle (HTML taglarını sil)
+    const description = p.body_html
+      ? p.body_html.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().substring(0, 500)
+      : null;
+
+    return {
+      id: p.id,
+      title: p.title,
+      description: description,
+      price: p.variants[0].price,        // Ana fiyat
+      stock: p.variants[0].inventory_quantity,
+      image: p.images?.[0]?.src || null,
+      options: options,                   // Beden/renk seçenekleri
+      variants: variants,                 // Tüm varyantlar stok/fiyat ile
+      total_stock: p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
+    };
+  });
 }
 
 async function getOrdersByEmail(tenant, email) {
