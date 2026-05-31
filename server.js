@@ -14,6 +14,23 @@ const { buildSystemPrompt } = require("./systemprompt");
 
 // RAM: { sessionId → { tenantId, storeType, messages } }
 const conversations = {};
+// Lead yakalama - bot cevabında LEAD_DATA: formatını yakala
+async function extractAndSaveLead(reply, tenantId, sessionId) {
+  const match = reply.match(/LEAD_DATA:({.*?})/);
+  if (match) {
+    try {
+      const data = JSON.parse(match[1]);
+      await db.saveLead(tenantId, sessionId, data);
+      console.log('Lead kaydedildi:', data);
+    } catch(e) {
+      console.error('Lead parse hatası:', e.message);
+    }
+  }
+  // LEAD_DATA satırını cevaptan temizle (müşteri görmesin)
+  return reply.replace(/LEAD_DATA:{.*?}/g, '').trim();
+}
+
+
 const pendingOrderEmail = {};
 
 const SESSION_TTL = 30 * 60 * 1000;
@@ -261,6 +278,7 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
   try {
     const stats = await db.getStats(tenantId);
     const sessions = await db.getAllSessions(tenantId);
+    const leads = await db.getLeads(tenantId);
 
     const sessionsHTML = sessions.map(s => `
       <tr onclick="loadConversation('${s.session_id}')" style="cursor:pointer">
@@ -321,6 +339,36 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
     <div class="card"><div class="card-label">Bugün</div><div class="card-value">${stats.todaySessions}</div></div>
   </div>
   <div class="section">
+      <div class="section" style="margin-bottom:20px">
+    <div class="section-header" style="padding:18px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">
+      <h2 style="font-size:15px;font-weight:700;color:#2d3436">🎯 Potansiyel Müşteriler (Leads)</h2>
+      <span style="font-size:12px;color:#aaa">\${leads.length} lead</span>
+    </div>
+    \${leads.length === 0 ? '<div style="padding:24px;text-align:center;color:#aaa;font-size:13px">Henüz lead yok. Bot sohbet sırasında iletişim bilgisi aldığında burada görünecek.</div>' : \`
+    <table style="width:100%;border-collapse:collapse">
+      <thead style="background:#f7f8fc">
+        <tr>
+          <th style="padding:10px 16px;text-align:left;font-size:12px;color:#888;font-weight:600;text-transform:uppercase">Ad</th>
+          <th style="padding:10px 16px;text-align:left;font-size:12px;color:#888;font-weight:600;text-transform:uppercase">Email</th>
+          <th style="padding:10px 16px;text-align:left;font-size:12px;color:#888;font-weight:600;text-transform:uppercase">Telefon</th>
+          <th style="padding:10px 16px;text-align:left;font-size:12px;color:#888;font-weight:600;text-transform:uppercase">İlgilendiği Ürün</th>
+          <th style="padding:10px 16px;text-align:left;font-size:12px;color:#888;font-weight:600;text-transform:uppercase">Tarih</th>
+        </tr>
+      </thead>
+      <tbody>
+        \${leads.map(l => \`
+          <tr style="border-bottom:1px solid #f0f0f0">
+            <td style="padding:12px 16px;font-size:13px;font-weight:600">\${l.name || '-'}</td>
+            <td style="padding:12px 16px;font-size:13px">\${l.email ? \`<a href="mailto:\${l.email}" style="color:#667eea">\${l.email}</a>\` : '-'}</td>
+            <td style="padding:12px 16px;font-size:13px">\${l.phone ? \`<a href="tel:\${l.phone}" style="color:#667eea">\${l.phone}</a>\` : '-'}</td>
+            <td style="padding:12px 16px;font-size:13px;color:#636e72">\${l.interested_product || '-'}</td>
+            <td style="padding:12px 16px;font-size:12px;color:#aaa">\${new Date(l.created_at).toLocaleString('tr-TR')}</td>
+          </tr>
+        \`).join('')}
+      </tbody>
+    </table>
+    \`}
+  </div>
     <div class="section-header"><h2>💬 Son Konuşmalar <span style="font-size:12px;color:#aaa;font-weight:400">— detay için tıkla</span></h2></div>
     <table>
       <thead><tr><th>Session</th><th>Email</th><th>İlk Mesaj</th><th style="text-align:center">Mesaj</th><th>Son Aktivite</th></tr></thead>
@@ -429,7 +477,8 @@ app.post('/api/chat', async (req, res) => {
         msgs.push({ role: 'system', content: `Sipariş bilgileri:\n${orderText}` });
         msgs.push({ role: 'user', content: 'Bu sipariş bilgilerini müşteriye güzel bir şekilde açıkla.' });
 
-        const reply = await openai.chat(msgs, tenant);
+        let reply = await openai.chat(msgs, tenant);
+        reply = await extractAndSaveLead(reply, tenant_id, sessionId);
         msgs.push({ role: 'assistant', content: reply });
 
         await db.saveMessage(tenant_id, sessionId, 'user', message, tenant.platform);
@@ -442,7 +491,8 @@ app.post('/api/chat', async (req, res) => {
     }
 
     msgs.push({ role: 'user', content: message });
-    const reply = await openai.chat(msgs, tenant);
+    let reply = await openai.chat(msgs, tenant);
+    reply = await extractAndSaveLead(reply, tenant_id, sessionId);
     msgs.push({ role: 'assistant', content: reply });
 
     await db.saveMessage(tenant_id, sessionId, 'user', message, tenant.platform);
@@ -459,6 +509,18 @@ app.post('/api/chat', async (req, res) => {
 // ─── YARDIMCI ENDPOINTLER ─────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! 🚀', version: '2.0-multitenant' }));
 
+// ─── LEAD KAYDET ─────────────────────────────────────────────────────────────
+app.post('/api/lead', async (req, res) => {
+  const { tenant_id, sessionId, name, email, phone, product, notes } = req.body;
+  if (!tenant_id) return res.status(400).json({ error: 'tenant_id zorunlu' });
+  try {
+    await db.saveLead(tenant_id, sessionId, { name, email, phone, product, notes });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/stats', async (req, res) => {
   try { res.json(await db.getStats()); }
   catch (err) { res.status(500).json({ error: err.message }); }
@@ -467,4 +529,5 @@ app.get('/stats', async (req, res) => {
 app.listen(process.env.PORT || 3000, async () => {
   console.log(`Server ${process.env.PORT || 3000} portunda çalışıyor`);
   await db.init().catch(console.error);
+  await db.initLeads().catch(console.error);
 });

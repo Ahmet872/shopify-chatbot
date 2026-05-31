@@ -204,3 +204,40 @@ module.exports = {
   saveMessage, getStats, getAllSessions,
   getSessionMessages, updateSessionEmail
 };
+
+// ─── LEADS ────────────────────────────────────────────────────────────────────
+async function initLeads() {
+  const p = getPool();
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS leads (
+      id SERIAL PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      session_id TEXT,
+      name TEXT,
+      email TEXT,
+      phone TEXT,
+      interested_product TEXT,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+}
+
+async function saveLead(tenantId, sessionId, data) {
+  const p = getPool();
+  await p.query(`
+    INSERT INTO leads (tenant_id, session_id, name, email, phone, interested_product, notes)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT DO NOTHING
+  `, [tenantId, sessionId, data.name || null, data.email || null, data.phone || null, data.product || null, data.notes || null]);
+}
+
+async function getLeads(tenantId) {
+  const p = getPool();
+  const result = await p.query(`
+    SELECT * FROM leads WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100
+  `, [tenantId]);
+  return result.rows;
+}
+
+module.exports = Object.assign(module.exports, { initLeads, saveLead, getLeads });
