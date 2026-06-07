@@ -1,10 +1,28 @@
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// ─── RATE LIMITING ────────────────────────────────────────────────────────────
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000,       // 1 dakika pencere
+  max: 20,                    // IP başına dakikada max 20 istek
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Çok fazla mesaj gönderdiniz, lütfen bir dakika bekleyin.' }
+});
+
+const strictLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,                     // Admin/lead endpoint'leri için daha sıkı
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Çok fazla istek.' }
+});
 
 const shopify = require('./shopify');
 const woocommerce = require('./woocommerce');
@@ -34,7 +52,16 @@ async function extractAndSaveLead(reply, tenantId, sessionId) {
 const pendingOrderEmail = {};
 
 const SESSION_TTL = 30 * 60 * 1000;
+const MAX_HISTORY = 20; // Sistem prompt hariç tutulacak max mesaj sayısı
 const sessionTimers = {};
+
+// Sistem prompt'u koruyarak geçmişi MAX_HISTORY mesajla sınırla
+function trimHistory(msgs) {
+  const systemMsg = msgs[0]; // index 0 her zaman system prompt
+  const history = msgs.slice(1); // sistem dışı mesajlar
+  if (history.length <= MAX_HISTORY) return msgs;
+  return [systemMsg, ...history.slice(-MAX_HISTORY)];
+}
 
 function resetSessionTimer(sessionId) {
   if (sessionTimers[sessionId]) clearTimeout(sessionTimers[sessionId]);
@@ -428,7 +455,7 @@ app.get('/admin/conversation/:sessionId', async (req, res) => {
 });
 
 // ─── ANA CHAT ─────────────────────────────────────────────────────────────────
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', chatLimiter, async (req, res) => {
   const { message, sessionId, tenant_id } = req.body;
 
   if (!message || !sessionId || !tenant_id) {
@@ -477,7 +504,7 @@ app.post('/api/chat', async (req, res) => {
         msgs.push({ role: 'system', content: `Sipariş bilgileri:\n${orderText}` });
         msgs.push({ role: 'user', content: 'Bu sipariş bilgilerini müşteriye güzel bir şekilde açıkla.' });
 
-        let reply = await openai.chat(msgs, tenant);
+        let reply = await openai.chat(trimHistory(msgs), tenant);
         reply = await extractAndSaveLead(reply, tenant_id, sessionId);
         msgs.push({ role: 'assistant', content: reply });
 
@@ -491,7 +518,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     msgs.push({ role: 'user', content: message });
-    let reply = await openai.chat(msgs, tenant);
+    let reply = await openai.chat(trimHistory(msgs), tenant);
     reply = await extractAndSaveLead(reply, tenant_id, sessionId);
     msgs.push({ role: 'assistant', content: reply });
 
@@ -510,7 +537,7 @@ app.post('/api/chat', async (req, res) => {
 app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! 🚀', version: '2.0-multitenant' }));
 
 // ─── LEAD KAYDET ─────────────────────────────────────────────────────────────
-app.post('/api/lead', async (req, res) => {
+app.post('/api/lead', strictLimiter, async (req, res) => {
   const { tenant_id, sessionId, name, email, phone, product, notes } = req.body;
   if (!tenant_id) return res.status(400).json({ error: 'tenant_id zorunlu' });
   try {
