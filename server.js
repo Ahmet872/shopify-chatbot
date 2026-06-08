@@ -296,8 +296,18 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
   if (!tenant) return res.status(404).send('Tenant bulunamadı');
 
   const auth = req.headers.authorization;
-  const expectedPass = Buffer.from(`admin:${tenant.admin_password}`).toString('base64');
-  if (!auth || auth !== `Basic ${expectedPass}`) {
+  if (!auth || !auth.startsWith('Basic ')) {
+    res.setHeader('WWW-Authenticate', `Basic realm="${tenant.store_name} Admin"`);
+    return res.status(401).send('Yetkisiz erişim');
+  }
+
+  // Basic auth decode → "admin:şifre"
+  const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+  const colonIdx = decoded.indexOf(':');
+  const inputPassword = colonIdx !== -1 ? decoded.slice(colonIdx + 1) : '';
+
+  const passwordOk = await db.verifyAdminPassword(tenant, inputPassword);
+  if (!passwordOk) {
     res.setHeader('WWW-Authenticate', `Basic realm="${tenant.store_name} Admin"`);
     return res.status(401).send('Yetkisiz erişim');
   }
@@ -549,12 +559,17 @@ app.post('/api/lead', strictLimiter, async (req, res) => {
 });
 
 app.get('/stats', async (req, res) => {
+  const auth = req.headers.authorization;
+  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
+  if (!auth || auth !== 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64')) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Stats"');
+    return res.status(401).send('Yetkisiz');
+  }
   try { res.json(await db.getStats()); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.listen(process.env.PORT || 3000, async () => {
   console.log(`Server ${process.env.PORT || 3000} portunda çalışıyor`);
-  await db.init().catch(console.error);
-  await db.initLeads().catch(console.error);
+  await db.init().catch(console.error); // leads tablosu da init() içinde oluşuyor
 });

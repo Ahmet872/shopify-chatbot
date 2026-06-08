@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
 let pool = null;
 
 function getPool() {
@@ -68,6 +69,21 @@ async function init() {
     ALTER TABLE sessions ADD COLUMN IF NOT EXISTS customer_name TEXT;
   `).catch(() => {}); // Kolon zaten varsa sessizce geç
 
+  // Leads tablosunu da burada oluştur — ayrı çağırmayı unutma riski yok
+  await p.query(`
+    CREATE TABLE IF NOT EXISTS leads (
+      id SERIAL PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      session_id TEXT,
+      name TEXT,
+      email TEXT,
+      phone TEXT,
+      interested_product TEXT,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
   console.log('PostgreSQL bağlandı ✓');
 }
 
@@ -90,6 +106,10 @@ async function getAllTenants() {
 
 async function createTenant(data) {
   const p = getPool();
+  // Şifreyi hashle — plain text asla veritabanına yazılmaz
+  const rawPassword = data.admin_password || '1234';
+  const hashedPassword = await bcrypt.hash(rawPassword, 10);
+
   const result = await p.query(`
     INSERT INTO tenants (
       tenant_id, platform, store_name, store_language,
@@ -120,7 +140,7 @@ async function createTenant(data) {
     data.wc_url || null, data.wc_key || null, data.wc_secret || null,
     data.openai_key || null, data.whatsapp || null,
     data.shipping_days || '3-5', data.shipping_company || 'Yurtiçi Kargo',
-    data.return_days || '14', data.admin_password || '1234'
+    data.return_days || '14', hashedPassword
   ]);
   return result.rows[0];
 }
@@ -142,17 +162,41 @@ async function saveMessage(tenantId, sessionId, role, message, store = 'shopify'
 
 async function getStats(tenantId = null) {
   const p = getPool();
-  const filter = tenantId ? `WHERE tenant_id = '${tenantId}'` : '';
-  const filterAnd = tenantId ? `AND tenant_id = '${tenantId}'` : '';
 
-  const totalSessions = await p.query(`SELECT COUNT(*) FROM sessions ${filter}`);
-  const totalMessages = await p.query(`SELECT COUNT(*) FROM conversations ${filter}`);
+  if (tenantId) {
+    const totalSessions = await p.query(
+      'SELECT COUNT(*) FROM sessions WHERE tenant_id = $1', [tenantId]
+    );
+    const totalMessages = await p.query(
+      'SELECT COUNT(*) FROM conversations WHERE tenant_id = $1', [tenantId]
+    );
+    const todaySessions = await p.query(
+      'SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE AND tenant_id = $1',
+      [tenantId]
+    );
+    const topQuestions = await p.query(`
+      SELECT message, COUNT(*) as count FROM conversations
+      WHERE role = 'user' AND tenant_id = $1
+      GROUP BY message ORDER BY count DESC LIMIT 5
+    `, [tenantId]);
+
+    return {
+      totalSessions: parseInt(totalSessions.rows[0].count),
+      totalMessages: parseInt(totalMessages.rows[0].count),
+      todaySessions: parseInt(todaySessions.rows[0].count),
+      topQuestions: topQuestions.rows
+    };
+  }
+
+  // tenantId yoksa tüm sistem (master admin)
+  const totalSessions = await p.query('SELECT COUNT(*) FROM sessions');
+  const totalMessages = await p.query('SELECT COUNT(*) FROM conversations');
   const todaySessions = await p.query(
-    `SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE ${filterAnd}`
+    'SELECT COUNT(*) FROM sessions WHERE DATE(created_at) = CURRENT_DATE'
   );
   const topQuestions = await p.query(`
     SELECT message, COUNT(*) as count FROM conversations
-    WHERE role = 'user' ${filterAnd}
+    WHERE role = 'user'
     GROUP BY message ORDER BY count DESC LIMIT 5
   `);
 
@@ -199,11 +243,10 @@ async function updateSessionEmail(sessionId, email) {
   );
 }
 
-module.exports = {
-  init, getTenant, getAllTenants, createTenant,
-  saveMessage, getStats, getAllSessions,
-  getSessionMessages, updateSessionEmail
-};
+// Tenant admin şifresini bcrypt ile doğrula
+async function verifyAdminPassword(tenant, plainPassword) {
+  return bcrypt.compare(plainPassword, tenant.admin_password);
+}
 
 // ─── LEADS ────────────────────────────────────────────────────────────────────
 async function initLeads() {
@@ -240,4 +283,9 @@ async function getLeads(tenantId) {
   return result.rows;
 }
 
-module.exports = Object.assign(module.exports, { initLeads, saveLead, getLeads });
+module.exports = {
+  init, getTenant, getAllTenants, createTenant,
+  saveMessage, getStats, getAllSessions,
+  getSessionMessages, updateSessionEmail,
+  verifyAdminPassword, initLeads, saveLead, getLeads
+};
