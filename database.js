@@ -84,6 +84,18 @@ async function init() {
     );
   `);
 
+  // ─── PLAIN TEXT ŞİFRE MİGRATIONU ─────────────────────────────────────────
+  // DB'deki eski plain-text şifreleri bulup bcrypt hash'e çevir.
+  // $2b$ ile başlıyorsa zaten hash — atla. Aksi halde hashle ve yaz.
+  const { rows: allTenants } = await p.query('SELECT id, admin_password FROM tenants');
+  for (const t of allTenants) {
+    if (!t.admin_password.startsWith('$2b$') && !t.admin_password.startsWith('$2a$')) {
+      const hashed = await bcrypt.hash(t.admin_password, 10);
+      await p.query('UPDATE tenants SET admin_password = $1 WHERE id = $2', [hashed, t.id]);
+      console.log(`Tenant #${t.id} şifresi hashlendi ✓`);
+    }
+  }
+
   console.log('PostgreSQL bağlandı ✓');
 }
 
@@ -283,9 +295,19 @@ async function getLeads(tenantId) {
   return result.rows;
 }
 
+
+async function getSessionBySessionId(sessionId) {
+  const p = getPool();
+  const result = await p.query(
+    'SELECT * FROM sessions WHERE session_id = $1',
+    [sessionId]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   init, getTenant, getAllTenants, createTenant,
   saveMessage, getStats, getAllSessions,
   getSessionMessages, updateSessionEmail,
-  verifyAdminPassword, initLeads, saveLead, getLeads
+  verifyAdminPassword, getSessionBySessionId, initLeads, saveLead, getLeads
 };

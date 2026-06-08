@@ -30,6 +30,60 @@ const openai = require('./openai');
 const db = require('./database');
 const { buildSystemPrompt } = require("./systemprompt");
 
+// ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
+function getMasterB64() {
+  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
+  return 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64');
+}
+
+function masterAuth(req, res) {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== getMasterB64()) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Master Admin"');
+    res.status(401).send('Yetkisiz erişim');
+    return false;
+  }
+  return true;
+}
+
+async function tenantAuth(req, res, tenant) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Basic ')) {
+    res.setHeader('WWW-Authenticate', `Basic realm="${tenant.store_name} Admin"`);
+    res.status(401).send('Yetkisiz erişim');
+    return false;
+  }
+  const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+  const inputPassword = decoded.slice(decoded.indexOf(':') + 1);
+  const ok = await db.verifyAdminPassword(tenant, inputPassword);
+  if (!ok) {
+    res.setHeader('WWW-Authenticate', `Basic realm="${tenant.store_name} Admin"`);
+    res.status(401).send('Yetkisiz erişim');
+    return false;
+  }
+  return true;
+}
+
+// ─── HATA / ALERT SİSTEMİ ─────────────────────────────────────────────────────
+// Slack webhook varsa oraya gönder, yoksa sadece console'a yaz.
+async function sendAlert(tenantId, context, error) {
+  const msg = `[CHATBOT ERROR] Tenant: ${tenantId} | ${context} | ${error}`;
+  console.error(msg);
+
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) return;   // webhook yoksa atla
+
+  try {
+    const axios = require('axios');
+    await axios.post(webhookUrl, {
+      text: `🚨 *Chatbot Hatası*\nTenant: \`${tenantId}\`\nKonum: ${context}\nHata: \`${error}\`\nZaman: ${new Date().toLocaleString('tr-TR')}`
+    }, { timeout: 3000 });
+  } catch (_) {
+    // Alert gönderilemedi — sessizce devam et, ana akışı engelleme
+  }
+}
+
+
 // RAM: { sessionId → { tenantId, storeType, messages } }
 const conversations = {};
 // Lead yakalama - bot cevabında LEAD_DATA: formatını yakala
@@ -453,14 +507,43 @@ document.getElementById('modal').addEventListener('click', e => { if(e.target===
 });
 
 app.get('/admin/conversation/:sessionId', async (req, res) => {
-  // Basic auth yeterli, hangi tenant olduğu önemli değil bu endpoint için
+  // Güvenlik: ya master admin ya da session'ın sahibi tenant admin girebilir.
   const auth = req.headers.authorization;
-  if (!auth) return res.status(401).send('Yetkisiz');
+  if (!auth) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Admin"');
+    return res.status(401).send('Yetkisiz');
+  }
+
+  // 1) Master admin mi?
+  if (auth === getMasterB64()) {
+    try {
+      const messages = await db.getSessionMessages(req.params.sessionId);
+      return res.json(messages);
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // 2) Tenant admin mi? — session'ın tenant'ını bul, o tenant'ın şifresiyle doğrula
   try {
+    const session = await db.getSessionBySessionId(req.params.sessionId);
+    if (!session) return res.status(404).json({ error: 'Session bulunamadı' });
+
+    const tenant = await db.getTenant(session.tenant_id);
+    if (!tenant) return res.status(404).json({ error: 'Tenant bulunamadı' });
+
+    const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+    const inputPassword = decoded.slice(decoded.indexOf(':') + 1);
+    const ok = await db.verifyAdminPassword(tenant, inputPassword);
+    if (!ok) {
+      res.setHeader('WWW-Authenticate', `Basic realm="${tenant.store_name} Admin"`);
+      return res.status(401).send('Yetkisiz');
+    }
+
     const messages = await db.getSessionMessages(req.params.sessionId);
-    res.json(messages);
+    return res.json(messages);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -538,8 +621,27 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
     res.json({ reply });
 
   } catch (err) {
-    console.error('Chat Hatası:', err.message);
-    res.status(500).json({ error: 'Bir hata oluştu, lütfen tekrar deneyin.' });
+    // API hatalarını sınıflandır ve kullanıcıya anlamlı mesaj ver
+    const isApiErr = err.response?.status;
+    let userMsg = 'Bir hata oluştu, lütfen tekrar deneyin.';
+    let logContext = 'Chat genel hata';
+
+    if (isApiErr === 401 || isApiErr === 403) {
+      logContext = `${tenant?.platform || '?'} API kimlik doğrulama hatası (${isApiErr})`;
+      userMsg = 'Mağaza bağlantısında yetkilendirme sorunu oluştu. Lütfen daha sonra tekrar deneyin.';
+    } else if (isApiErr === 429) {
+      logContext = `${tenant?.platform || '?'} API rate limit aşıldı`;
+      userMsg = 'Şu an çok fazla istek var, lütfen birkaç saniye bekleyip tekrar deneyin.';
+    } else if (isApiErr >= 500) {
+      logContext = `${tenant?.platform || '?'} API sunucu hatası (${isApiErr})`;
+      userMsg = 'Mağaza sisteminde geçici bir sorun var. Lütfen biraz sonra tekrar deneyin.';
+    } else if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT') {
+      logContext = `${tenant?.platform || '?'} API bağlantı hatası (${err.code})`;
+      userMsg = 'Mağaza sunucusuna şu an ulaşılamıyor. Lütfen daha sonra tekrar deneyin.';
+    }
+
+    await sendAlert(tenant_id || 'bilinmiyor', logContext, err.message);
+    res.status(500).json({ error: userMsg });
   }
 });
 
