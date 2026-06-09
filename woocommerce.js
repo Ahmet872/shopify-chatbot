@@ -12,13 +12,28 @@ function createClient(tenant) {
   });
 }
 
+// ─── CONTROLLED CONCURRENCY ───────────────────────────────────────────────────
+// Promise.all yerine max N eşzamanlı istek — WC'nin ban atmasını önler.
+async function runInBatches(items, batchSize, asyncFn) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(asyncFn));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 async function getProducts(tenant) {
   const client = createClient(tenant);
 
   // Ana ürünleri çek
   const response = await client.get('/products?per_page=20&status=publish');
 
-  const products = await Promise.all(response.data.map(async p => {
+  // ─── ESKİ KOD: await Promise.all(response.data.map(async p => { ... }))
+  // Bu 20 ürün × varyasyon = 20 eşzamanlı istek açardı — bazı WC siteleri ban atar.
+  // YENİ: 3'lü batch — her batch bittikten sonra sıradakini başlat.
+  const products = await runInBatches(response.data, 3, async (p) => {
     // Açıklamayı temizle (HTML taglari)
     const description = p.description
       ? p.description.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().substring(0, 500)
@@ -90,7 +105,7 @@ async function getProducts(tenant) {
       total_stock,
       category: p.categories?.[0]?.name || ''
     };
-  }));
+  });
 
   return products;
 }

@@ -311,3 +311,35 @@ module.exports = {
   getSessionMessages, updateSessionEmail,
   verifyAdminPassword, getSessionBySessionId, initLeads, saveLead, getLeads
 };
+
+// ─── PENDING ORDER EMAIL (DB'de kalıcı) ──────────────────────────────────────
+// Restart sonrası pendingOrderEmail RAM'den siliniyor.
+// sessions tablosundaki pending_order_email kolonunu kullanıyoruz.
+
+async function setPendingOrderEmail(sessionId, value) {
+  const p = getPool();
+  // Kolon henüz yoksa oluştur (migration)
+  await p.query(`
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pending_order_email BOOLEAN DEFAULT FALSE
+  `).catch(() => {});
+  await p.query(
+    'UPDATE sessions SET pending_order_email = $1 WHERE session_id = $2',
+    [value, sessionId]
+  );
+}
+
+async function getPendingOrderEmail(sessionId) {
+  const p = getPool();
+  // Kolon yoksa false döndür
+  try {
+    const result = await p.query(
+      'SELECT pending_order_email FROM sessions WHERE session_id = $1',
+      [sessionId]
+    );
+    return result.rows[0]?.pending_order_email ?? false;
+  } catch (_) {
+    return false;
+  }
+}
+
+module.exports = Object.assign(module.exports, { setPendingOrderEmail, getPendingOrderEmail });

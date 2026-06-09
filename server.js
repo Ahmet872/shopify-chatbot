@@ -30,10 +30,35 @@ const openai = require('./openai');
 const db = require('./database');
 const { buildSystemPrompt } = require("./systemprompt");
 
+// ─── XSS KORUMASI ─────────────────────────────────────────────────────────────
+// Kullanıcı/müşteri verisini doğrudan HTML'e yazmadan önce her zaman bu
+// fonksiyondan geçir. store_name, first_message, session_id vb.
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
+
+
+// ─── STARTUP GÜVENLİK KONTROLÜ ───────────────────────────────────────────────
+// MASTER_ADMIN_PASSWORD env'de tanımlı değilse sunucu başlamayı reddeder.
+// Deploy sırasında unutulmasını önler — sessizce varsayılan şifre kullanmak
+// tüm admin panelini açık bırakır.
+if (!process.env.MASTER_ADMIN_PASSWORD) {
+  console.error('HATA: MASTER_ADMIN_PASSWORD env değişkeni tanımlı değil!');
+  console.error('Render → Environment → MASTER_ADMIN_PASSWORD ekleyin ve yeniden deploy edin.');
+  process.exit(1);
+}
+
 // ─── AUTH HELPERS ─────────────────────────────────────────────────────────────
 function getMasterB64() {
-  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
-  return 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64');
+  // Burada artık default yok — yukarıda process.exit ile garantiledik
+  return 'Basic ' + Buffer.from(`admin:${process.env.MASTER_ADMIN_PASSWORD}`).toString('base64');
 }
 
 function masterAuth(req, res) {
@@ -86,6 +111,52 @@ async function sendAlert(tenantId, context, error) {
 
 // RAM: { sessionId → { tenantId, storeType, messages } }
 const conversations = {};
+
+// ─── ÜRÜN CACHE ───────────────────────────────────────────────────────────────
+// { tenantId → { products, expiresAt } }  —  5 dakika TTL
+const PRODUCT_CACHE_TTL = 5 * 60 * 1000; // 5 dakika
+const productCache = new Map();
+
+// ─── TENANT CACHE ─────────────────────────────────────────────────────────────
+// Her /api/chat isteğinde DB'ye gitmek yerine tenant verisini önbellekte tut.
+// TTL: 2 dakika — tenant ayarları sık değişmez ama güncellemeler gecikmesin.
+const TENANT_CACHE_TTL = 2 * 60 * 1000;
+const tenantCache = new Map();
+
+async function getTenantCached(tenantId) {
+  const cached = tenantCache.get(tenantId);
+  if (cached && Date.now() < cached.expiresAt) return cached.tenant;
+  const tenant = await db.getTenant(tenantId);
+  if (tenant) {
+    tenantCache.set(tenantId, { tenant, expiresAt: Date.now() + TENANT_CACHE_TTL });
+  }
+  return tenant;
+}
+
+function invalidateTenantCache(tenantId) {
+  tenantCache.delete(tenantId);
+}
+
+async function getProductsCached(tenant) {
+  const cached = productCache.get(tenant.tenant_id);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.products;
+  }
+  const products = tenant.platform === 'woocommerce'
+    ? await woocommerce.getProducts(tenant)
+    : await shopify.getProducts(tenant);
+  productCache.set(tenant.tenant_id, {
+    products,
+    expiresAt: Date.now() + PRODUCT_CACHE_TTL
+  });
+  console.log(`[Cache] ${tenant.tenant_id} ürünleri güncellendi (${products.length} adet)`);
+  return products;
+}
+
+// Cache'i manuel temizlemek için admin endpoint'e yardımcı
+function invalidateProductCache(tenantId) {
+  productCache.delete(tenantId);
+}
 // Lead yakalama - bot cevabında LEAD_DATA: formatını yakala
 async function extractAndSaveLead(reply, tenantId, sessionId) {
   const match = reply.match(/LEAD_DATA:({.*?})/);
@@ -103,7 +174,7 @@ async function extractAndSaveLead(reply, tenantId, sessionId) {
 }
 
 
-const pendingOrderEmail = {};
+// pendingOrderEmail artık DB'de tutuluyor (db.setPendingOrderEmail / db.getPendingOrderEmail)
 
 const SESSION_TTL = 30 * 60 * 1000;
 const MAX_HISTORY = 20; // Sistem prompt hariç tutulacak max mesaj sayısı
@@ -119,9 +190,9 @@ function trimHistory(msgs) {
 
 function resetSessionTimer(sessionId) {
   if (sessionTimers[sessionId]) clearTimeout(sessionTimers[sessionId]);
-  sessionTimers[sessionId] = setTimeout(() => {
+  sessionTimers[sessionId] = setTimeout(async () => {
     delete conversations[sessionId];
-    delete pendingOrderEmail[sessionId];
+    await db.setPendingOrderEmail(sessionId, false).catch(() => {});
     delete sessionTimers[sessionId];
   }, SESSION_TTL);
 }
@@ -138,8 +209,7 @@ function isOrderQuery(text) {
 
 
 async function getProducts(tenant) {
-  if (tenant.platform === 'woocommerce') return await woocommerce.getProducts(tenant);
-  return await shopify.getProducts(tenant);
+  return getProductsCached(tenant);
 }
 
 async function getOrders(tenant, email) {
@@ -150,7 +220,7 @@ async function getOrders(tenant, email) {
 // ─── MASTER ADMIN (tüm tenant'ları görür) ─────────────────────────────────────
 app.get('/admin', async (req, res) => {
   const auth = req.headers.authorization;
-  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
+  const masterPass = process.env.MASTER_ADMIN_PASSWORD; // env zorunlu — startup kontrolü garantiler
   if (!auth || auth !== 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64')) {
     res.setHeader('WWW-Authenticate', 'Basic realm="Master Admin"');
     return res.status(401).send('Yetkisiz erişim');
@@ -163,12 +233,12 @@ app.get('/admin', async (req, res) => {
 
     const tenantsHTML = tenants.map(t => `
       <tr>
-        <td style="padding:12px 16px;font-weight:600;color:#2d3436">${t.tenant_id}</td>
-        <td style="padding:12px 16px"><span style="background:${t.platform === 'shopify' ? '#e8f4fd' : '#f0f9f0'};color:${t.platform === 'shopify' ? '#2980b9' : '#27ae60'};padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${t.platform}</span></td>
-        <td style="padding:12px 16px;font-size:13px">${t.store_name}</td>
-        <td style="padding:12px 16px;font-size:13px;color:#636e72">${t.shopify_url || t.wc_url || '-'}</td>
+        <td style="padding:12px 16px;font-weight:600;color:#2d3436">${escapeHtml(t.tenant_id)}</td>
+        <td style="padding:12px 16px"><span style="background:${t.platform === 'shopify' ? '#e8f4fd' : '#f0f9f0'};color:${t.platform === 'shopify' ? '#2980b9' : '#27ae60'};padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${escapeHtml(t.platform)}</span></td>
+        <td style="padding:12px 16px;font-size:13px">${escapeHtml(t.store_name)}</td>
+        <td style="padding:12px 16px;font-size:13px;color:#636e72">${escapeHtml(t.shopify_url || t.wc_url || '-')}</td>
         <td style="padding:12px 16px;font-size:12px;color:#aaa">${new Date(t.created_at).toLocaleString('tr-TR')}</td>
-        <td style="padding:12px 16px"><a href="/admin/tenant/${t.tenant_id}" style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:5px 14px;border-radius:12px;text-decoration:none;font-size:12px;font-weight:600">Detay</a></td>
+        <td style="padding:12px 16px"><a href="/admin/tenant/${encodeURIComponent(t.tenant_id)}" style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:5px 14px;border-radius:12px;text-decoration:none;font-size:12px;font-weight:600">Detay</a></td>
       </tr>
     `).join('');
 
@@ -227,7 +297,7 @@ app.get('/admin', async (req, res) => {
 // ─── YENİ TENANT EKLE FORMU ───────────────────────────────────────────────────
 app.get('/admin/new-tenant', (req, res) => {
   const auth = req.headers.authorization;
-  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
+  const masterPass = process.env.MASTER_ADMIN_PASSWORD; // env zorunlu — startup kontrolü garantiler
   if (!auth || auth !== 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64')) {
     res.setHeader('WWW-Authenticate', 'Basic realm="Master Admin"');
     return res.status(401).send('Yetkisiz');
@@ -329,7 +399,7 @@ app.get('/admin/new-tenant', (req, res) => {
 
 app.post('/admin/new-tenant', express.urlencoded({ extended: true }), async (req, res) => {
   const auth = req.headers.authorization;
-  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
+  const masterPass = process.env.MASTER_ADMIN_PASSWORD; // env zorunlu — startup kontrolü garantiler
   if (!auth || auth !== 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64')) {
     res.setHeader('WWW-Authenticate', 'Basic realm="Master Admin"');
     return res.status(401).send('Yetkisiz');
@@ -372,11 +442,11 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
     const leads = await db.getLeads(tenantId);
 
     const sessionsHTML = sessions.map(s => `
-      <tr onclick="loadConversation('${s.session_id}')" style="cursor:pointer">
-        <td style="padding:12px 16px;font-size:13px;color:#636e72;font-family:monospace">${s.session_id.substring(0,16)}...</td>
-        <td style="padding:12px 16px;font-size:13px">${s.customer_email ? `<span style="background:#ffeaa7;padding:3px 8px;border-radius:8px;font-size:12px">📧 ${s.customer_email}</span>` : '-'}</td>
-        <td style="padding:12px 16px;font-size:13px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.first_message || '-'}</td>
-        <td style="padding:12px 16px;text-align:center"><span style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${s.message_count}</span></td>
+      <tr onclick="loadConversation('${escapeHtml(s.session_id)}')" style="cursor:pointer">
+        <td style="padding:12px 16px;font-size:13px;color:#636e72;font-family:monospace">${escapeHtml(s.session_id.substring(0,16))}...</td>
+        <td style="padding:12px 16px;font-size:13px">${s.customer_email ? `<span style="background:#ffeaa7;padding:3px 8px;border-radius:8px;font-size:12px">📧 ${escapeHtml(s.customer_email)}</span>` : '-'}</td>
+        <td style="padding:12px 16px;font-size:13px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(s.first_message || '-')}</td>
+        <td style="padding:12px 16px;text-align:center"><span style="background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600">${parseInt(s.message_count) || 0}</span></td>
         <td style="padding:12px 16px;font-size:12px;color:#aaa">${new Date(s.updated_at).toLocaleString('tr-TR')}</td>
       </tr>
     `).join('');
@@ -385,7 +455,7 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
 <html lang="tr">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>${tenant.store_name} Admin</title>
+<title>${escapeHtml(tenant.store_name)} Admin</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f0f2f5; }
@@ -420,7 +490,7 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
 </head>
 <body>
 <div class="header">
-  <div><h1>🤖 ${tenant.store_name} Admin</h1><p style="opacity:.85;font-size:13px">${new Date().toLocaleString('tr-TR')}</p></div>
+  <div><h1>🤖 ${escapeHtml(tenant.store_name)} Admin</h1><p style="opacity:.85;font-size:13px">${new Date().toLocaleString('tr-TR')}</p></div>
   <button onclick="location.reload()" style="background:rgba(255,255,255,0.2);color:white;border:none;padding:8px 18px;border-radius:20px;cursor:pointer;font-weight:600">🔄 Yenile</button>
 </div>
 <div class="container">
@@ -449,10 +519,10 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
       <tbody>
         \${leads.map(l => \`
           <tr style="border-bottom:1px solid #f0f0f0">
-            <td style="padding:12px 16px;font-size:13px;font-weight:600">\${l.name || '-'}</td>
-            <td style="padding:12px 16px;font-size:13px">\${l.email ? \`<a href="mailto:\${l.email}" style="color:#667eea">\${l.email}</a>\` : '-'}</td>
-            <td style="padding:12px 16px;font-size:13px">\${l.phone ? \`<a href="tel:\${l.phone}" style="color:#667eea">\${l.phone}</a>\` : '-'}</td>
-            <td style="padding:12px 16px;font-size:13px;color:#636e72">\${l.interested_product || '-'}</td>
+            <td style="padding:12px 16px;font-size:13px;font-weight:600">\${escapeHtml(l.name || '-')}</td>
+            <td style="padding:12px 16px;font-size:13px">\${l.email ? \`<a href="mailto:\${escapeHtml(l.email)}" style="color:#667eea">\${escapeHtml(l.email)}</a>\` : '-'}</td>
+            <td style="padding:12px 16px;font-size:13px">\${l.phone ? \`<a href="tel:\${escapeHtml(l.phone)}" style="color:#667eea">\${escapeHtml(l.phone)}</a>\` : '-'}</td>
+            <td style="padding:12px 16px;font-size:13px;color:#636e72">\${escapeHtml(l.interested_product || '-')}</td>
             <td style="padding:12px 16px;font-size:12px;color:#aaa">\${new Date(l.created_at).toLocaleString('tr-TR')}</td>
           </tr>
         \`).join('')}
@@ -555,7 +625,7 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
     return res.status(400).json({ error: 'message, sessionId ve tenant_id zorunludur.' });
   }
 
-  const tenant = await db.getTenant(tenant_id);
+  const tenant = await getTenantCached(tenant_id);
   if (!tenant) {
     return res.status(404).json({ error: 'Geçersiz tenant.' });
   }
@@ -565,19 +635,37 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
 
     if (!conversations[sessionId]) {
       const products = await getProducts(tenant);
+      const systemContent = buildSystemPrompt(products, tenant);
+
+      // ─── RESTART SONRASI GEÇMİŞİ KURTAR ─────────────────────────────────
+      // RAM boşsa (restart sonrası) DB'deki konuşma geçmişini yeniden yükle.
+      // Böylece müşteri "az önce beden sorduydum" dedi, bot yeniden başlamıyor.
+      const dbHistory = await db.getSessionMessages(sessionId).catch(() => []);
+      const restoredMessages = dbHistory.map(row => ({
+        role: row.role,       // 'user' | 'assistant'
+        content: row.message
+      }));
+
       conversations[sessionId] = {
         tenantId: tenant_id,
         storeType: tenant.platform,
-        messages: [{ role: 'system', content: buildSystemPrompt(products, tenant) }]
+        messages: [
+          { role: 'system', content: systemContent },
+          ...restoredMessages
+        ]
       };
+
+      if (restoredMessages.length > 0) {
+        console.log(`[Session] ${sessionId} — ${restoredMessages.length} mesaj DB'den geri yüklendi`);
+      }
     }
 
     const msgs = conversations[sessionId].messages;
 
-    if (pendingOrderEmail[sessionId]) {
+    if (await db.getPendingOrderEmail(sessionId)) {
       const email = extractEmail(message);
       if (email) {
-        pendingOrderEmail[sessionId] = false;
+        await db.setPendingOrderEmail(sessionId, false);
         await db.updateSessionEmail(sessionId, email);
         const orders = await getOrders(tenant, email);
 
@@ -607,7 +695,7 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
         return res.json({ reply });
       }
     } else if (isOrderQuery(message)) {
-      pendingOrderEmail[sessionId] = true;
+      await db.setPendingOrderEmail(sessionId, true);
     }
 
     msgs.push({ role: 'user', content: message });
@@ -660,9 +748,24 @@ app.post('/api/lead', strictLimiter, async (req, res) => {
   }
 });
 
+// ─── CACHE TEMİZLE (Master Admin) ─────────────────────────────────────────────
+// Ürün güncellemesi sonrası cache'i zorla temizlemek için kullan.
+// GET /admin/cache/clear           → tüm tenantların cache'ini sil
+// GET /admin/cache/clear/:tenantId → sadece o tenant'ı sil
+app.get('/admin/cache/clear/:tenantId?', (req, res) => {
+  if (!masterAuth(req, res)) return;
+  const { tenantId } = req.params;
+  if (tenantId) {
+    invalidateProductCache(tenantId);
+    return res.json({ ok: true, cleared: tenantId });
+  }
+  productCache.clear();
+  res.json({ ok: true, cleared: 'all' });
+});
+
 app.get('/stats', async (req, res) => {
   const auth = req.headers.authorization;
-  const masterPass = process.env.MASTER_ADMIN_PASSWORD || 'master1234';
+  const masterPass = process.env.MASTER_ADMIN_PASSWORD; // env zorunlu — startup kontrolü garantiler
   if (!auth || auth !== 'Basic ' + Buffer.from(`admin:${masterPass}`).toString('base64')) {
     res.setHeader('WWW-Authenticate', 'Basic realm="Stats"');
     return res.status(401).send('Yetkisiz');
