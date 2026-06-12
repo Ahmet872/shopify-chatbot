@@ -547,14 +547,30 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
   </div>
 </div>
 <script>
+// Credential'i sayfada sakla; server-side sifre embed etme.
+// Kullanici bu sayfaya giris yaptiginda Basic Auth popup'i gosterilir.
+// Biz o credential'i sessionStorage'da tutarak sonraki fetch'lerde kullaniyoruz.
+(function initCredential() {
+  if (!sessionStorage.getItem('adminAuth')) {
+    const raw = prompt('Admin sifrenizi girin:');
+    if (raw) sessionStorage.setItem('adminAuth', 'Basic ' + btoa('admin:' + raw));
+  }
+})();
+
 async function loadConversation(sessionId) {
-  document.getElementById('modal-title').textContent = 'Konuşma: ' + sessionId.substring(0,16) + '...';
-  document.getElementById('modal-body').innerHTML = '<div style="text-align:center;color:#aaa;padding:20px">Yükleniyor...</div>';
+  document.getElementById('modal-title').textContent = 'Konusma: ' + sessionId.substring(0,16) + '...';
+  document.getElementById('modal-body').innerHTML = '<div style="text-align:center;color:#aaa;padding:20px">Yukleniyor...</div>';
   document.getElementById('modal').classList.add('active');
   try {
+    const authHeader = sessionStorage.getItem('adminAuth') || '';
     const res = await fetch('/admin/conversation/' + sessionId, {
-      headers: { 'Authorization': 'Basic ' + btoa('admin:${tenant.admin_password}') }
+      headers: { 'Authorization': authHeader }
     });
+    if (res.status === 401) {
+      sessionStorage.removeItem('adminAuth');
+      document.getElementById('modal-body').innerHTML = '<div style="color:red">Oturum suresi doldu, sayfayi yenileyin.</div>';
+      return;
+    }
     const messages = await res.json();
     document.getElementById('modal-body').innerHTML = messages.map(m => \`
       <div class="chat-msg \${m.role === 'user' ? 'user' : ''}">
@@ -740,6 +756,12 @@ app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! �
 app.post('/api/lead', strictLimiter, async (req, res) => {
   const { tenant_id, sessionId, name, email, phone, product, notes } = req.body;
   if (!tenant_id) return res.status(400).json({ error: 'tenant_id zorunlu' });
+
+  // Guvenlik: tenant_id'nin gercekten var oldugunu dogrula.
+  // Boylece rastgele tenant_id ile sahte lead doldurma engellenir.
+  const tenant = await db.getTenant(tenant_id).catch(() => null);
+  if (!tenant) return res.status(404).json({ error: 'Gecersiz tenant.' });
+
   try {
     await db.saveLead(tenant_id, sessionId, { name, email, phone, product, notes });
     res.json({ ok: true });
@@ -752,16 +774,15 @@ app.post('/api/lead', strictLimiter, async (req, res) => {
 // Ürün güncellemesi sonrası cache'i zorla temizlemek için kullan.
 // GET /admin/cache/clear           → tüm tenantların cache'ini sil
 // GET /admin/cache/clear/:tenantId → sadece o tenant'ı sil
-app.get('/admin/cache/clear', (req, res) => {
+app.get('/admin/cache/clear/:tenantId?', (req, res) => {
   if (!masterAuth(req, res)) return;
+  const { tenantId } = req.params;
+  if (tenantId) {
+    invalidateProductCache(tenantId);
+    return res.json({ ok: true, cleared: tenantId });
+  }
   productCache.clear();
   res.json({ ok: true, cleared: 'all' });
-});
-
-app.get('/admin/cache/clear/:tenantId', (req, res) => {
-  if (!masterAuth(req, res)) return;
-  invalidateProductCache(req.params.tenantId);
-  res.json({ ok: true, cleared: req.params.tenantId });
 });
 
 app.get('/stats', async (req, res) => {
