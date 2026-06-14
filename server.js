@@ -794,15 +794,18 @@ app.post('/api/lead', strictLimiter, async (req, res) => {
 // Ürün güncellemesi sonrası cache'i zorla temizlemek için kullan.
 // GET /admin/cache/clear           → tüm tenantların cache'ini sil
 // GET /admin/cache/clear/:tenantId → sadece o tenant'ı sil
-app.get('/admin/cache/clear/:tenantId?', (req, res) => {
+// NOT: Express 5 + path-to-regexp v8 optional parametre (:param?) desteklemiyor.
+// Bu yüzden iki ayrı route tanımladık.
+app.get('/admin/cache/clear', (req, res) => {
   if (!masterAuth(req, res)) return;
-  const { tenantId } = req.params;
-  if (tenantId) {
-    invalidateProductCache(tenantId);
-    return res.json({ ok: true, cleared: tenantId });
-  }
   productCache.clear();
   res.json({ ok: true, cleared: 'all' });
+});
+
+app.get('/admin/cache/clear/:tenantId', (req, res) => {
+  if (!masterAuth(req, res)) return;
+  invalidateProductCache(req.params.tenantId);
+  res.json({ ok: true, cleared: req.params.tenantId });
 });
 
 app.get('/stats', async (req, res) => {
