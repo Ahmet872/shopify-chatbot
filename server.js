@@ -4,8 +4,28 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+// ─── PROXY & CORS & BODY ───────────────────────────────────────────────────────
+// trust proxy: Render'ın load balancer'ı arkasında doğru IP'yi al (rate limit için şart).
+app.set('trust proxy', 1);
+
+// CORS: yalnızca izin verilen origin'ler. Yeni müşteri ekleyince buraya domain ekle.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Origin yoksa (curl, Postman, server-to-server) veya listede varsa izin ver.
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(new Error('CORS: izin verilmeyen origin — ' + origin));
+  },
+  credentials: true
+}));
+
+// Body limiti: büyük payload saldırılarını engelle.
+app.use(express.json({ limit: '20kb' }));
 
 // ─── RATE LIMITING ────────────────────────────────────────────────────────────
 const chatLimiter = rateLimit({
