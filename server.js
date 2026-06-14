@@ -705,21 +705,27 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
         await db.updateSessionEmail(sessionId, email);
         const orders = await getOrders(tenant, email);
 
-        let orderText;
+        // Sipariş bulunamadıysa GPT'ye sormadan direkt cevap dön.
+        // GPT'ye bırakırsak bağlamdan hallüsinasyon üretebilir.
         if (orders.length === 0) {
-          orderText = `${email} adresine ait sipariş bulunamadı.`;
-        } else {
-          orderText = orders.map(o => {
+          const reply = `**${email}** adresine ait herhangi bir sipariş bulunamadı. 🔍\n\nEmail adresini doğru yazdığınızdan emin misiniz? Farklı bir adresle tekrar deneyebilirsiniz.`;
+          msgs.push({ role: 'assistant', content: reply });
+          await db.saveMessage(tenant_id, sessionId, 'user', message, tenant.platform);
+          await db.saveMessage(tenant_id, sessionId, 'assistant', reply, tenant.platform);
+          return res.json({ reply });
+        }
+
+        const orderText = orders.map(o => {
             const trackingLink = o.tracking && o.tracking !== 'Henüz yok'
               ? `\nKargo Takip: <a href="https://www.yurticikargo.com/tr/online-islemler/gonderi-sorgula?code=${o.tracking}" target="_blank" style="display:inline-block;margin-top:8px;background:#e74c3c;color:white;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:13px;font-weight:600">📦 Kargonu Takip Et</a>`
               : '\nKargo: Henüz kargoya verilmedi';
             return `Sipariş #${o.id} | Tarih: ${o.date} | Durum: ${o.fulfillment || o.status || 'Hazırlanıyor'} | Takip No: ${o.tracking} | Toplam: ${o.total} | Ürünler: ${o.items.join(', ')}${trackingLink}`;
           }).join('\n\n');
-        }
 
         msgs.push({ role: 'user', content: `Email: ${email}` });
-        msgs.push({ role: 'system', content: `Sipariş bilgileri:\n${orderText}` });
-        msgs.push({ role: 'user', content: 'Bu sipariş bilgilerini müşteriye güzel bir şekilde açıkla.' });
+        // Kesin talimat: sadece aşağıdaki veriyi kullan, asla tahmin etme veya uydurma.
+        msgs.push({ role: 'system', content: `GERÇEK SİPARİŞ VERİSİ (SADECE BUNU KULLAN, ASLA TAHMIN ETME):\n${orderText}` });
+        msgs.push({ role: 'user', content: 'Yukarıdaki gerçek sipariş verilerini müşteriye insanca anlat. Veri dışında HİÇBİR şey ekleme.' });
 
         let reply = await openai.chat(trimHistory(msgs), tenant);
         reply = await extractAndSaveLead(reply, tenant_id, sessionId);
@@ -817,6 +823,22 @@ app.get('/stats', async (req, res) => {
   }
   try { res.json(await db.getStats()); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── GEÇİCİ: Tenant şifre sıfırlama (master auth gerekir) ───────────────────
+// GET /admin/reset-password/:tenantId/:newPassword
+// Kullandıktan sonra bu route'u silebilirsin.
+app.get('/admin/reset-password/:tenantId/:newPassword', async (req, res) => {
+  if (!masterAuth(req, res)) return;
+  const { tenantId, newPassword } = req.params;
+  const bcrypt = require('bcryptjs');
+  const hashed = await bcrypt.hash(newPassword, 10);
+  const p = require('./database').getPool ? require('./database') : null;
+  const { Pool } = require('pg');
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  await pool.query('UPDATE tenants SET admin_password = $1 WHERE tenant_id = $2', [hashed, tenantId]);
+  await pool.end();
+  res.json({ ok: true, tenant: tenantId, message: `Şifre "${newPassword}" olarak güncellendi` });
 });
 
 app.listen(process.env.PORT || 3000, async () => {
