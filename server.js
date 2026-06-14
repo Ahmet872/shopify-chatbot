@@ -523,9 +523,9 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
       <div class="section" style="margin-bottom:20px">
     <div class="section-header" style="padding:18px 24px;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;align-items:center">
       <h2 style="font-size:15px;font-weight:700;color:#2d3436">🎯 Potansiyel Müşteriler (Leads)</h2>
-      <span style="font-size:12px;color:#aaa">\${leads.length} lead</span>
+      <span style="font-size:12px;color:#aaa">${leads.length} lead</span>
     </div>
-    \${leads.length === 0 ? '<div style="padding:24px;text-align:center;color:#aaa;font-size:13px">Henüz lead yok. Bot sohbet sırasında iletişim bilgisi aldığında burada görünecek.</div>' : \`
+    ${leads.length === 0 ? '<div style="padding:24px;text-align:center;color:#aaa;font-size:13px">Henüz lead yok. Bot sohbet sırasında iletişim bilgisi aldığında burada görünecek.</div>' : `
     <table style="width:100%;border-collapse:collapse">
       <thead style="background:#f7f8fc">
         <tr>
@@ -537,18 +537,18 @@ app.get('/admin/tenant/:tenantId', async (req, res) => {
         </tr>
       </thead>
       <tbody>
-        \${leads.map(l => \`
+        ${leads.map(l => `
           <tr style="border-bottom:1px solid #f0f0f0">
-            <td style="padding:12px 16px;font-size:13px;font-weight:600">\${escapeHtml(l.name || '-')}</td>
-            <td style="padding:12px 16px;font-size:13px">\${l.email ? \`<a href="mailto:\${escapeHtml(l.email)}" style="color:#667eea">\${escapeHtml(l.email)}</a>\` : '-'}</td>
-            <td style="padding:12px 16px;font-size:13px">\${l.phone ? \`<a href="tel:\${escapeHtml(l.phone)}" style="color:#667eea">\${escapeHtml(l.phone)}</a>\` : '-'}</td>
-            <td style="padding:12px 16px;font-size:13px;color:#636e72">\${escapeHtml(l.interested_product || '-')}</td>
-            <td style="padding:12px 16px;font-size:12px;color:#aaa">\${new Date(l.created_at).toLocaleString('tr-TR')}</td>
+            <td style="padding:12px 16px;font-size:13px;font-weight:600">${escapeHtml(l.name || '-')}</td>
+            <td style="padding:12px 16px;font-size:13px">${l.email ? `<a href="mailto:${escapeHtml(l.email)}" style="color:#667eea">${escapeHtml(l.email)}</a>` : '-'}</td>
+            <td style="padding:12px 16px;font-size:13px">${l.phone ? `<a href="tel:${escapeHtml(l.phone)}" style="color:#667eea">${escapeHtml(l.phone)}</a>` : '-'}</td>
+            <td style="padding:12px 16px;font-size:13px;color:#636e72">${escapeHtml(l.interested_product || '-')}</td>
+            <td style="padding:12px 16px;font-size:12px;color:#aaa">${new Date(l.created_at).toLocaleString('tr-TR')}</td>
           </tr>
-        \`).join('')}
+        `).join('')}
       </tbody>
     </table>
-    \`}
+    `}
   </div>
     <div class="section-header"><h2>💬 Son Konuşmalar <span style="font-size:12px;color:#aaa;font-weight:400">— detay için tıkla</span></h2></div>
     <table>
