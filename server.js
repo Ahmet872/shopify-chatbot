@@ -778,6 +778,41 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
 // ─── YARDIMCI ENDPOINTLER ─────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! 🚀', version: '2.0-multitenant' }));
 
+// ─── SESSION GEÇMİŞİ (widget için, public) ──────────────────────────────────
+// Sayfa değiştiğinde (örn. Kadın → Aksesuar) widget bu endpoint'i çağırıp
+// sohbet geçmişini ekrana geri yükler. Admin şifresi gerekmez çünkü kullanıcı
+// zaten kendi tarayıcısında sakladığı kendi sessionId'sini soruyor.
+// Güvenlik: tenant_id + sessionId eşleşmesi zorunlu — biri rastgele sessionId
+// denese bile, session başka tenant'a aitse 404 döner, mesaj sızmaz.
+app.get('/api/session/:sessionId/history', async (req, res) => {
+  const { sessionId } = req.params;
+  const { tenant_id } = req.query;
+
+  if (!sessionId || !tenant_id) {
+    return res.status(400).json({ error: 'sessionId ve tenant_id zorunludur.' });
+  }
+
+  try {
+    const session = await db.getSessionBySessionId(sessionId);
+
+    // Session hiç yoksa (ilk ziyaret) — boş geçmiş dön, hata değil.
+    if (!session) {
+      return res.json({ messages: [] });
+    }
+
+    // Session başka bir tenant'a aitse, bu tenant'a sızdırma.
+    if (session.tenant_id !== tenant_id) {
+      return res.json({ messages: [] });
+    }
+
+    const messages = await db.getSessionMessages(sessionId);
+    return res.json({ messages });
+  } catch (err) {
+    console.error('[Session History] Hata:', err.message);
+    return res.status(500).json({ error: 'Geçmiş yüklenemedi.' });
+  }
+});
+
 // ─── LEAD KAYDET ─────────────────────────────────────────────────────────────
 app.post('/api/lead', strictLimiter, async (req, res) => {
   const { tenant_id, sessionId, name, email, phone, product, notes } = req.body;
