@@ -44,6 +44,20 @@ const strictLimiter = rateLimit({
   message: { error: 'Çok fazla istek.' }
 });
 
+const adminLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Çok fazla istek, lütfen bir dakika bekleyin.' }
+});
+
+// GÜVENLİK: /admin/* ve /stats hiçbir rate limit'e sahip değildi — master
+// admin şifresi ve her tenant'ın şifresi sınırsız sayıda denenebiliyordu.
+// Tüm admin/stats yüzeyini tek noktadan koruyoruz (yeni route eklense bile
+// otomatik kapsanır).
+app.use(['/admin', '/stats'], adminLimiter);
+
 const shopify = require('./shopify');
 const woocommerce = require('./woocommerce');
 const openai = require('./openai');
@@ -592,12 +606,21 @@ async function loadConversation(sessionId) {
       return;
     }
     const messages = await res.json();
-    document.getElementById('modal-body').innerHTML = messages.map(m => \`
-      <div class="chat-msg \${m.role === 'user' ? 'user' : ''}">
-        <div class="chat-bubble \${m.role === 'user' ? 'user' : 'assistant'}">\${m.message}</div>
-        <div class="chat-time">\${new Date(m.created_at).toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'})}</div>
-      </div>
-    \`).join('');
+    const body = document.getElementById('modal-body');
+    body.innerHTML = '';
+    messages.forEach(m => {
+      const row = document.createElement('div');
+      row.className = 'chat-msg' + (m.role === 'user' ? ' user' : '');
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble ' + (m.role === 'user' ? 'user' : 'assistant');
+      bubble.textContent = m.message;
+      row.appendChild(bubble);
+      const time = document.createElement('div');
+      time.className = 'chat-time';
+      time.textContent = new Date(m.created_at).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      row.appendChild(time);
+      body.appendChild(row);
+    });
   } catch(e) {
     document.getElementById('modal-body').innerHTML = '<div style="color:red">Hata oluştu</div>';
   }
@@ -860,20 +883,24 @@ app.get('/stats', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ─── GEÇİCİ: Tenant şifre sıfırlama (master auth gerekir) ───────────────────
-// GET /admin/reset-password/:tenantId/:newPassword
-// Kullandıktan sonra bu route'u silebilirsin.
-app.get('/admin/reset-password/:tenantId/:newPassword', async (req, res) => {
+// ─── Tenant şifre sıfırlama (master auth gerekir) ───────────────────────────
+// Eski hali GET /admin/reset-password/:tenantId/:newPassword şeklindeydi —
+// yeni şifre URL'de düz metin olarak taşınıyordu (server access log'larına,
+// tarayıcı geçmişine, proxy loglarına düşer). POST + body'ye taşındı ve
+// database.js'deki mevcut pool üzerinden çalışacak şekilde düzeltildi
+// (ayrı bir Pool açıp rejectUnauthorized:false ile SSL doğrulamasını
+// tekrar es geçmek yerine).
+app.post('/admin/reset-password/:tenantId', express.json(), async (req, res) => {
   if (!masterAuth(req, res)) return;
-  const { tenantId, newPassword } = req.params;
+  const { tenantId } = req.params;
+  const { newPassword } = req.body;
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: 'Yeni şifre en az 8 karakter olmalı.' });
+  }
   const bcrypt = require('bcryptjs');
   const hashed = await bcrypt.hash(newPassword, 10);
-  const p = require('./database').getPool ? require('./database') : null;
-  const { Pool } = require('pg');
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-  await pool.query('UPDATE tenants SET admin_password = $1 WHERE tenant_id = $2', [hashed, tenantId]);
-  await pool.end();
-  res.json({ ok: true, tenant: tenantId, message: `Şifre "${newPassword}" olarak güncellendi` });
+  await db.updateAdminPasswordHash(tenantId, hashed);
+  res.json({ ok: true, tenant: tenantId, message: 'Şifre güncellendi.' });
 });
 
 app.listen(process.env.PORT || 3000, async () => {

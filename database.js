@@ -260,6 +260,14 @@ async function verifyAdminPassword(tenant, plainPassword) {
   return bcrypt.compare(plainPassword, tenant.admin_password);
 }
 
+// Master admin'in bir tenant sifresini sifirlamasi icin - hash'i cagiran
+// taraf uretir, burasi sadece yazar. Ayri bir Pool acmak yerine mevcut
+// paylasilan pool'u kullanir (SSL ayarlari tek yerde yonetilir).
+async function updateAdminPasswordHash(tenantId, hashedPassword) {
+  const p = getPool();
+  await p.query('UPDATE tenants SET admin_password = $1 WHERE tenant_id = $2', [hashedPassword, tenantId]);
+}
+
 // ─── LEADS ────────────────────────────────────────────────────────────────────
 async function initLeads() {
   const p = getPool();
@@ -309,7 +317,8 @@ module.exports = {
   init, getTenant, getAllTenants, createTenant,
   saveMessage, getStats, getAllSessions,
   getSessionMessages, updateSessionEmail,
-  verifyAdminPassword, getSessionBySessionId, initLeads, saveLead, getLeads
+  verifyAdminPassword, getSessionBySessionId, initLeads, saveLead, getLeads,
+  updateAdminPasswordHash
 };
 
 // ─── PENDING ORDER EMAIL (DB'de kalıcı) ──────────────────────────────────────

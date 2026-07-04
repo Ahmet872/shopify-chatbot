@@ -2,7 +2,7 @@ const axios = require('axios');
 
 function createClient(tenant) {
   return axios.create({
-    baseURL: `https://${tenant.shopify_url}/admin/api/2024-01`,
+    baseURL: `https://${tenant.shopify_url}/admin/api/2026-07`, // Guncel stabil surum -- eskisi (2024-01) suresi dolmus, sessizce farkli bir surume dusuyordu
     headers: {
       'X-Shopify-Access-Token': tenant.shopify_token,
       'Content-Type': 'application/json'

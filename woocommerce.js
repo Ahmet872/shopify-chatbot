@@ -1,14 +1,31 @@
 const axios = require('axios');
 const https = require('https');
 
+// GUVENLIK: SSL dogrulamasi artik her zaman kapali degil. Sadece yerel/dev
+// ortamlar (deneme.local, localhost, 127.0.0.1, .test) icin self-signed
+// sertifika kabul ediliyor -- gercek musteri magazalari (canli WooCommerce
+// siteleri) her zaman gecerli sertifika ister. Bu olmadan MITM ile
+// wc_key/wc_secret calinabilir.
+function isLocalDevUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    return host === 'localhost' || host === '127.0.0.1' ||
+           host.endsWith('.local') || host.endsWith('.test');
+  } catch (_) {
+    return false;
+  }
+}
+
 function createClient(tenant) {
+  const isDev = isLocalDevUrl(tenant.wc_url);
   return axios.create({
     baseURL: `${tenant.wc_url}/wp-json/wc/v3`,
     auth: {
       username: tenant.wc_key,
       password: tenant.wc_secret
     },
-    httpsAgent: new https.Agent({ rejectUnauthorized: false })
+    // Sadece dev/local host'larda self-signed sertifikaya izin ver.
+    httpsAgent: new https.Agent({ rejectUnauthorized: !isDev })
   });
 }
 

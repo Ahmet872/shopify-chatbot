@@ -368,6 +368,93 @@ function getTime() {
   return new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
 }
 
+// ─── SANITIZER ────────────────────────────────────────────────────────────
+// Bot mesajları LLM'den geliyor ve ürün kartları için kasıtlı HTML içeriyor
+// (systemprompt.js'deki şablona bak). Ancak prompt injection ile LLM'e
+// zararlı HTML ürettirilebilir, bu yüzden asla ham innerHTML basılmaz.
+// Sadece bilinen ürün kartı/WhatsApp şablonundaki tag+attribute'lara izin
+// veren bir allowlist sanitizer kullanılıyor. Kullanıcı mesajları ise HTML
+// olarak YORUMLANMAZ — her zaman düz metin (textContent) olarak basılır.
+const ALLOWED_TAGS = new Set(['DIV', 'SPAN', 'IMG', 'A', 'STRONG', 'B', 'EM', 'BR']);
+const ALLOWED_ATTRS = {
+  DIV: ['style'],
+  SPAN: ['style'],
+  IMG: ['src', 'style'],
+  A: ['href', 'target', 'style'],
+  STRONG: [], B: [], EM: [], BR: []
+};
+
+function isSafeUrl(value, allowedPrefixes) {
+  try {
+    const url = new URL(value, window.location.href);
+    return allowedPrefixes.some(p => url.href.startsWith(p));
+  } catch (_) {
+    return false;
+  }
+}
+
+function sanitizeStyle(value) {
+  // CSS içinde url(), expression(), javascript: gibi aktif içerik taşınmasın —
+  // sadece basit statik değer çiftlerine izin ver.
+  if (/url\s*\(|expression\s*\(|javascript:|@import/i.test(value)) return '';
+  return value;
+}
+
+function sanitizeNode(node) {
+  // Metin ve yorum düğümleri her zaman güvenli
+  if (node.nodeType === Node.TEXT_NODE) return node.cloneNode();
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+
+  if (!ALLOWED_TAGS.has(node.tagName)) {
+    // Bilinmeyen/tehlikeli tag (script, img onerror vb. attribute'lu olsa bile
+    // burada zaten tag bazında engelleniyor) — sadece metin içeriğini al.
+    const span = document.createElement('span');
+    span.textContent = node.textContent;
+    return span;
+  }
+
+  const clean = document.createElement(node.tagName);
+  const allowedAttrs = ALLOWED_ATTRS[node.tagName] || [];
+  for (const attr of Array.from(node.attributes)) {
+    const name = attr.name.toLowerCase();
+    if (!allowedAttrs.includes(name)) continue; // onerror, onclick, onload vb. burada elenir
+    if (name === 'src' && node.tagName === 'IMG') {
+      if (isSafeUrl(attr.value, ['https://', 'http://'])) clean.setAttribute('src', attr.value);
+      continue;
+    }
+    if (name === 'href' && node.tagName === 'A') {
+      if (isSafeUrl(attr.value, ['https://wa.me/', 'https://t.me/'])) clean.setAttribute('href', attr.value);
+      continue;
+    }
+    if (name === 'target') {
+      clean.setAttribute('target', '_blank');
+      clean.setAttribute('rel', 'noopener noreferrer');
+      continue;
+    }
+    if (name === 'style') {
+      const safe = sanitizeStyle(attr.value);
+      if (safe) clean.setAttribute('style', safe);
+      continue;
+    }
+  }
+  for (const child of Array.from(node.childNodes)) {
+    const sanitizedChild = sanitizeNode(child);
+    if (sanitizedChild) clean.appendChild(sanitizedChild);
+  }
+  return clean;
+}
+
+function sanitizeHtml(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const fragment = document.createDocumentFragment();
+  for (const child of Array.from(template.content.childNodes)) {
+    const sanitized = sanitizeNode(child);
+    if (sanitized) fragment.appendChild(sanitized);
+  }
+  return fragment;
+}
+
 function addMessage(text, role) {
   const msgs = document.getElementById('chat-messages');
   const row = document.createElement('div');
@@ -375,13 +462,19 @@ function addMessage(text, role) {
   if (role === 'bot') {
     const av = document.createElement('div');
     av.className = 'msg-avatar-small';
-    av.innerHTML = '<span>A</span>';
+    av.textContent = 'A';
     row.appendChild(av);
   }
   const col = document.createElement('div');
   const msgEl = document.createElement('div');
   msgEl.className = 'msg ' + role;
-  msgEl.innerHTML = text;
+  if (role === 'bot') {
+    // Bot mesajı: ürün kartı HTML'i olabilir — allowlist sanitizer'dan geçir.
+    msgEl.appendChild(sanitizeHtml(text));
+  } else {
+    // Kullanıcı mesajı: ASLA HTML olarak yorumlanmaz, her zaman düz metin.
+    msgEl.textContent = text;
+  }
   col.appendChild(msgEl);
   const timeEl = document.createElement('div');
   timeEl.className = 'msg-time';
