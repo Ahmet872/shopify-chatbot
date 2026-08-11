@@ -41,16 +41,39 @@ async function runInBatches(items, batchSize, asyncFn) {
   return results;
 }
 
+// WooCommerce sayfa numarası tabanlı sayfalama kullanır (?page=N). Shopify'daki
+// gibi tüm katalog LLM system promptuna JSON olarak gömüldüğü için burada da
+// aynı MAX_PRODUCTS üst sınırını uyguluyoruz — bkz. shopify.js'deki not.
+async function fetchAllProducts(client) {
+  const PER_PAGE = 100;      // WooCommerce'in izin verdiği maksimum
+  const MAX_PAGES = 20;      // sonsuz döngü riskine karşı mutlak üst sınır
+  const MAX_PRODUCTS = 200;  // pratik üst sınır — prompt boyutunu makul tutar
+
+  let products = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const response = await client.get(`/products?per_page=${PER_PAGE}&status=publish&page=${page}`);
+    if (!response.data.length) break;
+
+    products = products.concat(response.data);
+    if (products.length >= MAX_PRODUCTS) {
+      products = products.slice(0, MAX_PRODUCTS);
+      break;
+    }
+    if (response.data.length < PER_PAGE) break; // son sayfaya ulaşıldı
+  }
+  return products;
+}
+
 async function getProducts(tenant) {
   const client = createClient(tenant);
 
-  // Ana ürünleri çek
-  const response = await client.get('/products?per_page=20&status=publish');
+  // Ana ürünleri çek (tüm sayfalar, üst sınıra kadar)
+  const rawProducts = await fetchAllProducts(client);
 
   // ─── ESKİ KOD: await Promise.all(response.data.map(async p => { ... }))
   // Bu 20 ürün × varyasyon = 20 eşzamanlı istek açardı — bazı WC siteleri ban atar.
   // YENİ: 3'lü batch — her batch bittikten sonra sıradakini başlat.
-  const products = await runInBatches(response.data, 3, async (p) => {
+  const products = await runInBatches(rawProducts, 3, async (p) => {
     // Açıklamayı temizle (HTML taglari)
     const description = p.description
       ? p.description.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().substring(0, 500)

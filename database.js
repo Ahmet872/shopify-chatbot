@@ -269,22 +269,9 @@ async function updateAdminPasswordHash(tenantId, hashedPassword) {
 }
 
 // ─── LEADS ────────────────────────────────────────────────────────────────────
-async function initLeads() {
-  const p = getPool();
-  await p.query(`
-    CREATE TABLE IF NOT EXISTS leads (
-      id SERIAL PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      session_id TEXT,
-      name TEXT,
-      email TEXT,
-      phone TEXT,
-      interested_product TEXT,
-      notes TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-}
+// NOT: leads tablosu zaten init() içinde oluşturuluyor — burada ayrıca
+// initLeads() diye bir fonksiyon vardı, hiçbir yerden çağrılmıyordu ve
+// aynı CREATE TABLE'ı tekrar ediyordu. Kaldırıldı.
 
 async function saveLead(tenantId, sessionId, data) {
   const p = getPool();
@@ -317,7 +304,7 @@ module.exports = {
   init, getTenant, getAllTenants, createTenant,
   saveMessage, getStats, getAllSessions,
   getSessionMessages, updateSessionEmail,
-  verifyAdminPassword, getSessionBySessionId, initLeads, saveLead, getLeads,
+  verifyAdminPassword, getSessionBySessionId, saveLead, getLeads,
   updateAdminPasswordHash
 };
 

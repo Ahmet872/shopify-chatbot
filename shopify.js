@@ -10,11 +10,59 @@ function createClient(tenant) {
   });
 }
 
-async function getProducts(tenant) {
+// Shopify cursor-tabanlı sayfalama kullanır (page_info), offset/page numarası
+// değil. Sonraki sayfa Link header'ında "rel=next" olarak gelir.
+// GÜVENLİK/DAYANIKLILIK: sınırsız döngüye girmemek için MAX_PAGES ile üst
+// sınır koyduk — çok büyük kataloglarda bile makul sürede biter, sistem
+// promptu da aşırı büyümez.
+function parseNextPageInfo(linkHeader) {
+  if (!linkHeader) return null;
+  const match = linkHeader.split(',').find(part => part.includes('rel="next"'));
+  if (!match) return null;
+  const urlMatch = match.match(/<([^>]+)>/);
+  if (!urlMatch) return null;
+  const pageInfo = new URL(urlMatch[1]).searchParams.get('page_info');
+  return pageInfo || null;
+}
+
+// NOT: Tüm ürün kataloğu systemprompt.js'de JSON olarak LLM'e gömülüyor.
+// Bu yüzden sayfalamayı sınırsız açmak yerine MAX_PRODUCTS ile makul bir
+// üst sınır koyuyoruz — yoksa büyük katalogda system prompt devasa büyür,
+// hem OpenAI maliyeti hem de context limiti sorun olur. 200 ürün çoğu KOBİ
+// mağazası için yeterli; daha büyük kataloglar için ürünleri LLM'e tamamen
+// gömmek yerine arama/RAG tabanlı bir yaklaşım gerekir (ayrı bir konu).
+async function fetchAllProducts(tenant) {
   const client = createClient(tenant);
-  const response = await client.get('/products.json?limit=20');
-  
-  return response.data.products.map(p => {
+  const PER_PAGE = 250;        // Shopify'ın izin verdiği maksimum
+  const MAX_PAGES = 20;        // sonsuz döngü riskine karşı mutlak üst sınır
+  const MAX_PRODUCTS = 200;    // pratik üst sınır — prompt boyutunu makul tutar
+
+  let products = [];
+  let pageInfo = null;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const query = pageInfo
+      ? `/products.json?limit=${PER_PAGE}&page_info=${pageInfo}`
+      : `/products.json?limit=${PER_PAGE}`;
+    const response = await client.get(query);
+    products = products.concat(response.data.products);
+
+    if (products.length >= MAX_PRODUCTS) {
+      products = products.slice(0, MAX_PRODUCTS);
+      break;
+    }
+
+    pageInfo = parseNextPageInfo(response.headers.link);
+    if (!pageInfo) break;
+  }
+
+  return products;
+}
+
+async function getProducts(tenant) {
+  const rawProducts = await fetchAllProducts(tenant);
+
+  return rawProducts.map(p => {
     // Varyantları işle
     const variants = p.variants.map(v => ({
       id: v.id,

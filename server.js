@@ -62,6 +62,7 @@ const shopify = require('./shopify');
 const woocommerce = require('./woocommerce');
 const openai = require('./openai');
 const db = require('./database');
+const cache = require('./cache');
 const { buildSystemPrompt } = require("./systemprompt");
 
 // ─── XSS KORUMASI ─────────────────────────────────────────────────────────────
@@ -144,52 +145,52 @@ async function sendAlert(tenantId, context, error) {
 
 
 // RAM: { sessionId → { tenantId, storeType, messages } }
+// NOT: conversations RAM'de kalıyor — çoklu instance'ta bir sorun değil,
+// çünkü db.getSessionMessages() üzerinden zaten DB'den kurtarma mekanizması
+// var (aşağıda kullanılıyor). En kötü ihtimalle istek başka bir instance'a
+// düşerse geçmiş DB'den yeniden yüklenir, kaybolmaz.
 const conversations = {};
 
 // ─── ÜRÜN CACHE ───────────────────────────────────────────────────────────────
-// { tenantId → { products, expiresAt } }  —  5 dakika TTL
+// tenantId → products, 5 dakika TTL. cache.js üzerinden: REDIS_URL tanımlıysa
+// instance'lar arası paylaşılır, değilse bellek içi Map'e düşer (bkz. cache.js).
 const PRODUCT_CACHE_TTL = 5 * 60 * 1000; // 5 dakika
-const productCache = new Map();
+const PRODUCT_CACHE_PREFIX = 'products:';
 
 // ─── TENANT CACHE ─────────────────────────────────────────────────────────────
 // Her /api/chat isteğinde DB'ye gitmek yerine tenant verisini önbellekte tut.
 // TTL: 2 dakika — tenant ayarları sık değişmez ama güncellemeler gecikmesin.
 const TENANT_CACHE_TTL = 2 * 60 * 1000;
-const tenantCache = new Map();
+const TENANT_CACHE_PREFIX = 'tenant:';
 
 async function getTenantCached(tenantId) {
-  const cached = tenantCache.get(tenantId);
-  if (cached && Date.now() < cached.expiresAt) return cached.tenant;
+  const cached = await cache.cacheGet(TENANT_CACHE_PREFIX + tenantId);
+  if (cached) return cached;
   const tenant = await db.getTenant(tenantId);
   if (tenant) {
-    tenantCache.set(tenantId, { tenant, expiresAt: Date.now() + TENANT_CACHE_TTL });
+    await cache.cacheSet(TENANT_CACHE_PREFIX + tenantId, tenant, TENANT_CACHE_TTL);
   }
   return tenant;
 }
 
-function invalidateTenantCache(tenantId) {
-  tenantCache.delete(tenantId);
+async function invalidateTenantCache(tenantId) {
+  await cache.cacheDel(TENANT_CACHE_PREFIX + tenantId);
 }
 
 async function getProductsCached(tenant) {
-  const cached = productCache.get(tenant.tenant_id);
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.products;
-  }
+  const cached = await cache.cacheGet(PRODUCT_CACHE_PREFIX + tenant.tenant_id);
+  if (cached) return cached;
   const products = tenant.platform === 'woocommerce'
     ? await woocommerce.getProducts(tenant)
     : await shopify.getProducts(tenant);
-  productCache.set(tenant.tenant_id, {
-    products,
-    expiresAt: Date.now() + PRODUCT_CACHE_TTL
-  });
+  await cache.cacheSet(PRODUCT_CACHE_PREFIX + tenant.tenant_id, products, PRODUCT_CACHE_TTL);
   console.log(`[Cache] ${tenant.tenant_id} ürünleri güncellendi (${products.length} adet)`);
   return products;
 }
 
 // Cache'i manuel temizlemek için admin endpoint'e yardımcı
-function invalidateProductCache(tenantId) {
-  productCache.delete(tenantId);
+async function invalidateProductCache(tenantId) {
+  await cache.cacheDel(PRODUCT_CACHE_PREFIX + tenantId);
 }
 // Lead yakalama - bot cevabında LEAD_DATA: formatını yakala
 async function extractAndSaveLead(reply, tenantId, sessionId) {
@@ -860,15 +861,17 @@ app.post('/api/lead', strictLimiter, async (req, res) => {
 // GET /admin/cache/clear/:tenantId → sadece o tenant'ı sil
 // NOT: Express 5 + path-to-regexp v8 optional parametre (:param?) desteklemiyor.
 // Bu yüzden iki ayrı route tanımladık.
-app.get('/admin/cache/clear', (req, res) => {
+app.get('/admin/cache/clear', async (req, res) => {
   if (!masterAuth(req, res)) return;
-  productCache.clear();
+  await cache.cacheClearPrefix(PRODUCT_CACHE_PREFIX);
+  await cache.cacheClearPrefix(TENANT_CACHE_PREFIX);
   res.json({ ok: true, cleared: 'all' });
 });
 
-app.get('/admin/cache/clear/:tenantId', (req, res) => {
+app.get('/admin/cache/clear/:tenantId', async (req, res) => {
   if (!masterAuth(req, res)) return;
-  invalidateProductCache(req.params.tenantId);
+  await invalidateProductCache(req.params.tenantId);
+  await invalidateTenantCache(req.params.tenantId);
   res.json({ ok: true, cleared: req.params.tenantId });
 });
 
