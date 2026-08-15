@@ -685,7 +685,14 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
     return res.status(400).json({ error: 'message, sessionId ve tenant_id zorunludur.' });
   }
 
-  const tenant = await getTenantCached(tenant_id);
+  let tenant;
+  try {
+    tenant = await getTenantCached(tenant_id);
+  } catch (err) {
+    console.error('[Tenant Lookup] Hata:', err.message);
+    await sendAlert(tenant_id, 'Tenant lookup hatası', err.message);
+    return res.status(500).json({ error: 'Mağaza bilgisi yüklenemedi, lütfen tekrar deneyin.' });
+  }
   if (!tenant) {
     return res.status(404).json({ error: 'Geçersiz tenant.' });
   }
