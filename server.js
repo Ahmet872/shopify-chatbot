@@ -808,6 +808,22 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
 // ─── YARDIMCI ENDPOINTLER ─────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! 🚀', version: '2.0-multitenant' }));
 
+// ─── GEÇİCİ DEBUG ENDPOINT ─────────────────────────────────────────────────
+// Sadece DATABASE_URL'in host kısmını (şifre/kullanıcı adı olmadan) gösterir.
+// Sorun çözülünce bu route'u SİL.
+app.get('/api/debug-db', (req, res) => {
+  const raw = process.env.DATABASE_URL || '(TANIMLI DEĞİL)';
+  let host = '(parse edilemedi)';
+  try {
+    host = new URL(raw).hostname;
+  } catch (_) {}
+  res.json({
+    host,
+    length: raw.length,
+    startsWith: raw.substring(0, 15) + '...'
+  });
+});
+
 // ─── SESSION GEÇMİŞİ (widget için, public) ──────────────────────────────────
 // Sayfa değiştiğinde (örn. Kadın → Aksesuar) widget bu endpoint'i çağırıp
 // sohbet geçmişini ekrana geri yükler. Admin şifresi gerekmez çünkü kullanıcı
