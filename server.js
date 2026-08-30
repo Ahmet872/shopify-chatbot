@@ -808,25 +808,6 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
 // ─── YARDIMCI ENDPOINTLER ─────────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! 🚀', version: '2.0-multitenant' }));
 
-// ─── GEÇİCİ DEBUG ENDPOINT ─────────────────────────────────────────────────
-// Hem process.env.DATABASE_URL'i hem de pool'un GERÇEKTE bağlı olduğu
-// (zaten oluşturulmuşsa) host'u gösterir. Bunlar farklıysa, pool eski
-// bir değerle oluşturulmuş ve süreç yeniden başlatılmadan düzelmez demektir.
-// Sorun çözülünce bu route'u SİL.
-app.get('/api/debug-db', (req, res) => {
-  const raw = process.env.DATABASE_URL || '(TANIMLI DEĞİL)';
-  let envHost = '(parse edilemedi)';
-  try {
-    envHost = new URL(raw).hostname;
-  } catch (_) {}
-  res.json({
-    env_host: envHost,
-    env_length: raw.length,
-    pool: db.getActivePoolInfo(),
-    process_uptime_saniye: Math.round(process.uptime())
-  });
-});
-
 // ─── SESSION GEÇMİŞİ (widget için, public) ──────────────────────────────────
 // Sayfa değiştiğinde (örn. Kadın → Aksesuar) widget bu endpoint'i çağırıp
 // sohbet geçmişini ekrana geri yükler. Admin şifresi gerekmez çünkü kullanıcı
@@ -929,6 +910,21 @@ app.post('/admin/reset-password/:tenantId', express.json(), async (req, res) => 
   const hashed = await bcrypt.hash(newPassword, 10);
   await db.updateAdminPasswordHash(tenantId, hashed);
   res.json({ ok: true, tenant: tenantId, message: 'Şifre güncellendi.' });
+});
+
+// ─── GENEL HATA YAKALAYICI ─────────────────────────────────────────────────
+// Express'in ham "Internal Server Error" HTML sayfası yerine her zaman JSON
+// döner. CORS middleware'inin fırlattığı hata da (izin verilmeyen origin)
+// artık buradan düzgün bir 403 + JSON mesajı olarak döner, ham 500 değil.
+// Bu middleware TÜM route'lardan sonra tanımlanmalı — Express'te sıralama
+// önemli, burada kalmalı.
+app.use((err, req, res, next) => {
+  if (err && err.message && err.message.startsWith('CORS:')) {
+    console.warn('[CORS] Reddedildi:', err.message);
+    return res.status(403).json({ error: 'Bu domain için erişim izni yok.' });
+  }
+  console.error('[Beklenmeyen Hata]', err);
+  res.status(500).json({ error: 'Sunucu hatası, lütfen tekrar deneyin.' });
 });
 
 app.listen(process.env.PORT || 3000, async () => {
