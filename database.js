@@ -12,6 +12,23 @@ function getPool() {
   return pool;
 }
 
+// ─── GEÇİCİ DEBUG ─────────────────────────────────────────────────────────
+// pool zaten oluşturulmuşsa hangi host'a bağlı olduğunu (gerçek, canlı
+// bağlantı bilgisini) döndürür. env değişkeninden değil, doğrudan pg'nin
+// kendi options nesnesinden okur — böylece "pool eski değeri mi tutuyor"
+// sorusuna kesin cevap veririz.
+function getActivePoolInfo() {
+  if (!pool) return { exists: false };
+  const opts = pool.options || {};
+  return {
+    exists: true,
+    host: opts.host || '(connectionString üzerinden, host ayrıştırılmadı)',
+    connectionString: opts.connectionString
+      ? opts.connectionString.replace(/:\/\/[^@]+@/, '://***:***@')
+      : null
+  };
+}
+
 async function init() {
   const p = getPool();
 
@@ -305,7 +322,7 @@ module.exports = {
   saveMessage, getStats, getAllSessions,
   getSessionMessages, updateSessionEmail,
   verifyAdminPassword, getSessionBySessionId, saveLead, getLeads,
-  updateAdminPasswordHash
+  updateAdminPasswordHash, getActivePoolInfo
 };
 
 // ─── PENDING ORDER EMAIL (DB'de kalıcı) ──────────────────────────────────────

@@ -809,18 +809,21 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
 app.get('/', (req, res) => res.json({ message: 'Chatbot server çalışıyor! 🚀', version: '2.0-multitenant' }));
 
 // ─── GEÇİCİ DEBUG ENDPOINT ─────────────────────────────────────────────────
-// Sadece DATABASE_URL'in host kısmını (şifre/kullanıcı adı olmadan) gösterir.
+// Hem process.env.DATABASE_URL'i hem de pool'un GERÇEKTE bağlı olduğu
+// (zaten oluşturulmuşsa) host'u gösterir. Bunlar farklıysa, pool eski
+// bir değerle oluşturulmuş ve süreç yeniden başlatılmadan düzelmez demektir.
 // Sorun çözülünce bu route'u SİL.
 app.get('/api/debug-db', (req, res) => {
   const raw = process.env.DATABASE_URL || '(TANIMLI DEĞİL)';
-  let host = '(parse edilemedi)';
+  let envHost = '(parse edilemedi)';
   try {
-    host = new URL(raw).hostname;
+    envHost = new URL(raw).hostname;
   } catch (_) {}
   res.json({
-    host,
-    length: raw.length,
-    startsWith: raw.substring(0, 15) + '...'
+    env_host: envHost,
+    env_length: raw.length,
+    pool: db.getActivePoolInfo(),
+    process_uptime_saniye: Math.round(process.uptime())
   });
 });
 
