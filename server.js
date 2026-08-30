@@ -15,14 +15,22 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
-app.use(cors({
+const corsMiddleware = cors({
   origin: (origin, callback) => {
     // Origin yoksa (curl, Postman, server-to-server) veya listede varsa izin ver.
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     callback(new Error('CORS: izin verilmeyen origin — ' + origin));
   },
   credentials: true
-}));
+});
+
+// ÖNEMLİ: CORS sadece widget'ın çağırdığı /api/* uçlarına uygulanır.
+// /admin/* rotaları kendi masterAuth() koruması üzerinden çalışır ve
+// tarayıcıdan normal form gönderimiyle kullanılır — bunlara global CORS
+// origin whitelist'i uygulanırsa admin panelinin KENDİ domaini bile
+// listede olmadığı için "erişim izni yok" hatası verir. Bu yüzden global
+// app.use(cors(...)) yerine sadece /api altına scope'luyoruz.
+app.use('/api', corsMiddleware);
 
 // Body limiti: büyük payload saldırılarını engelle.
 app.use(express.json({ limit: '20kb' }));
