@@ -415,6 +415,30 @@ function removeTyping() {
   if (el) el.remove();
 }
 
+// Ürün kartlarındaki "Sepete Ekle" butonu bunu çağırır (inline onclick).
+// Shopify'ın kendi AJAX Cart API'sini kullanır — sayfa aynı domainde
+// çalıştığı için ekstra kimlik doğrulama/CORS gerekmez.
+async function addToCart(variantId) {
+  try {
+    const response = await fetch('/cart/add.js', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ id: variantId, quantity: 1 }] })
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => null);
+      addMessage(err?.description || 'Ürün sepete eklenemedi, stok tükenmiş olabilir.', 'bot');
+      return;
+    }
+    addMessage('✅ Ürün sepete eklendi.', 'bot');
+    // Temanın sepet ikonu/sayacı varsa Shopify'ın standart olayını tetikle,
+    // birçok tema bunu dinleyip sayacı otomatik günceller.
+    document.dispatchEvent(new CustomEvent('cart:updated'));
+  } catch (err) {
+    addMessage('Sepete eklerken bağlantı hatası oluştu, lütfen tekrar deneyin.', 'bot');
+  }
+}
+
 function addQuickReplies(options) {
   const msgs = document.getElementById('chat-messages');
   const container = document.createElement('div');

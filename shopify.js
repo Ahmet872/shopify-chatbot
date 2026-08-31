@@ -92,7 +92,8 @@ async function getProducts(tenant) {
       image: p.images?.[0]?.src || null,
       options: options,                   // Beden/renk seçenekleri
       variants: variants,                 // Tüm varyantlar stok/fiyat ile
-      total_stock: p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0)
+      total_stock: p.variants.reduce((sum, v) => sum + (v.inventory_quantity || 0), 0),
+      url: `https://${tenant.shopify_url}/products/${p.handle}` // Ürün sayfası — "Ürüne Git" butonu için
     };
   });
 }

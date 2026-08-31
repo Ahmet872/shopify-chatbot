@@ -96,7 +96,8 @@ async function getProducts(tenant) {
         options: [],
         variants: [],
         total_stock: p.stock_quantity ?? (p.in_stock ? 99 : 0),
-        category: p.categories?.[0]?.name || ''
+        category: p.categories?.[0]?.name || '',
+        url: p.permalink || null // Ürün sayfası — "Ürüne Git" butonu için
       };
     }
 
@@ -143,7 +144,8 @@ async function getProducts(tenant) {
       options,
       variants,
       total_stock,
-      category: p.categories?.[0]?.name || ''
+      category: p.categories?.[0]?.name || '',
+      url: p.permalink || null // Ürün sayfası — "Ürüne Git" butonu için
     };
   });
 
