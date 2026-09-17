@@ -6,10 +6,50 @@ function getPool() {
   if (!pool) {
     pool = new Pool({
       connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false }
+      ssl: { rejectUnauthorized: false },
+      keepAlive: true,          // TCP keepalive — Render'ın ağ tarafında sessizce
+                                 // kapattığı boşta bağlantıları azaltır
+      max: 10,                  // free/basic Postgres planlarında bağlantı limiti
+                                 // düşük, tek instance için 10 fazlasıyla yeterli
+      idleTimeoutMillis: 30000, // 30sn boşta kalan bağlantıyı biz kapatalım,
+                                 // Render'ın beklenmedik şekilde kesmesini beklemeyelim
+      connectionTimeoutMillis: 10000
+    });
+
+    // Havuzdaki boşta bir bağlantıda (aktif query yokken) oluşan hata pg
+    // tarafından pool'a 'error' event'i olarak düşer. Dinlenmezse Node bunu
+    // yakalanmamış exception sayıp PROCESS'İ ÇÖKERTEBİLİR — servisin "ayakta
+    // ama DB hatası veriyor" yerine tamamen restart atmasına yol açar.
+    // Burada sadece logluyoruz; havuz bir sonraki query'de otomatik yeni
+    // bağlantı açar, elle bir şey yapmaya gerek yok.
+    pool.on('error', (err) => {
+      console.error('[DB] Havuzda beklenmeyen bağlantı hatası (görmezden geliniyor):', err.message);
     });
   }
   return pool;
+}
+
+// Render Postgres ara sıra boşta bağlantıları kendi tarafında kapatıyor;
+// pg bunu "Connection terminated unexpectedly" diye fırlatıyor. Bu genelde
+// geçici bir durum — havuz otomatik yeni bağlantı açar, bir kere daha
+// denemek çoğu zaman yeterli. Sadece bağlantı kaynaklı hatalarda retry
+// yapar, gerçek query/syntax hatalarında hemen fırlatır.
+async function withRetry(fn, retries = 1) {
+  try {
+    return await fn();
+  } catch (err) {
+    const isConnError =
+      (err.message && err.message.includes('Connection terminated')) ||
+      err.code === 'ECONNRESET' ||
+      err.code === 'ETIMEDOUT' ||
+      err.code === '57P01'; // Postgres: admin tarafından bağlantı sonlandırıldı
+    if (isConnError && retries > 0) {
+      console.warn('[DB] Bağlantı hatası, yeniden deneniyor:', err.message);
+      await new Promise(r => setTimeout(r, 300));
+      return withRetry(fn, retries - 1);
+    }
+    throw err;
+  }
 }
 
 // ─── GEÇİCİ DEBUG ─────────────────────────────────────────────────────────
@@ -118,11 +158,13 @@ async function init() {
 
 async function getTenant(tenantId) {
   const p = getPool();
-  const result = await p.query(
-    'SELECT * FROM tenants WHERE tenant_id = $1 AND active = TRUE',
-    [tenantId]
-  );
-  return result.rows[0] || null;
+  return withRetry(async () => {
+    const result = await p.query(
+      'SELECT * FROM tenants WHERE tenant_id = $1 AND active = TRUE',
+      [tenantId]
+    );
+    return result.rows[0] || null;
+  });
 }
 
 async function getAllTenants() {
