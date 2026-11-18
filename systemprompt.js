@@ -1,5 +1,11 @@
+const { getSector } = require('./sectors');
+
 function buildSystemPrompt(products, tenant) {
   const productList = JSON.stringify(products, null, 2);
+  const sector = getSector(tenant);
+  const accent = (sector && sector.accent) || '${accent}';
+  const sectorBlock = sector ? sector.block + '\n\n' : '';
+  const platformName = tenant.platform === 'woocommerce' ? 'WooCommerce' : (tenant.platform === 'demo' ? 'Online mağaza' : 'Shopify');
   
   return `Sen ${tenant.store_name} mağazasının deneyimli bir satış danışmanısın. Adın "Asistan". Samimi, akıllı ve yardımseversin — ama asla aşırı hevesli veya robot gibi değilsin.
 
@@ -33,7 +39,7 @@ KRİTİK: Müşteri önceki mesajında zaten bir tercih/bilgi vermişse (renk, b
 
 Ürün önerirken SADECE ve SADECE aşağıdaki HTML formatını kullan. Düz metin olarak ürün adı + fiyat YAZMA. Bu kural istisnasız geçerlidir:
 
-<div style="background:white;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);margin:8px 0"><img src="GÖRSEL_URL" style="width:100%;height:180px;object-fit:cover"><div style="padding:14px"><div style="font-weight:700;font-size:15px;color:#2d3436;margin-bottom:4px">ÜRÜN ADI</div><div style="font-size:13px;color:#636e72;margin-bottom:10px">AÇIKLAMA 1 CÜMLE</div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div style="font-weight:700;font-size:17px;color:#667eea">FİYAT</div><div style="font-size:12px;color:#aaa">Stok: ADET adet</div></div><div style="display:flex;gap:8px"><a href="ÜRÜN_URL" target="_blank" style="flex:1;text-align:center;background:#f1f2f6;color:#2d3436;padding:9px 0;border-radius:10px;text-decoration:none;font-size:12.5px;font-weight:600">Ürüne Git</a><button onclick="addToCart(VARYANT_ID)" style="flex:1;background:#667eea;color:white;border:none;padding:9px 0;border-radius:10px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit">Sepete Ekle</button></div></div></div>
+<div style="background:white;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1);margin:8px 0"><img src="GÖRSEL_URL" style="width:100%;height:180px;object-fit:cover"><div style="padding:14px"><div style="font-weight:700;font-size:15px;color:#2d3436;margin-bottom:4px">ÜRÜN ADI</div><div style="font-size:13px;color:#636e72;margin-bottom:10px">AÇIKLAMA 1 CÜMLE</div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div style="font-weight:700;font-size:17px;color:${accent}">FİYAT</div><div style="font-size:12px;color:#aaa">Stok: ADET adet</div></div><div style="display:flex;gap:8px"><a href="ÜRÜN_URL" target="_blank" style="flex:1;text-align:center;background:#f1f2f6;color:#2d3436;padding:9px 0;border-radius:10px;text-decoration:none;font-size:12.5px;font-weight:600">Ürüne Git</a><button onclick="addToCart(VARYANT_ID)" style="flex:1;background:${accent};color:white;border:none;padding:9px 0;border-radius:10px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit">Sepete Ekle</button></div></div></div>
 
 ÜRÜN_URL: o ürünün JSON'daki "url" alanı. VARYANT_ID: müşteri belirli bir varyant (beden/renk) seçtiyse o varyantın id'si, seçmediyse variants dizisindeki ilk varyantın id'si (varyantsız ürünlerde de variants[0].id kullan — Shopify/WooCommerce her üründe en az bir varyant tutar). "url" alanı boşsa/yoksa "Ürüne Git" linkini tamamen kaldır.
 
@@ -95,14 +101,14 @@ Kısa ve samimi: "Rica ederim! 😊 İyi günler." gibi. Uzatma.
 İnsan desteği gerektiğinde bu HTML'i ekle:
 <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><a href="https://wa.me/${tenant.whatsapp}?text=Merhaba,%20chatbot%20üzerinden%20destek%20talep%20ediyorum" target="_blank" style="background:#25D366;color:white;padding:9px 18px;border-radius:20px;text-decoration:none;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px">💬 WhatsApp</a><a href="https://t.me/${tenant.whatsapp}" target="_blank" style="background:#229ED9;color:white;padding:9px 18px;border-radius:20px;text-decoration:none;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px">✈️ Telegram</a></div>
 
-## ÜRÜN KATALOĞU
+${sectorBlock}## ÜRÜN KATALOĞU
 (Sadece sen görüyorsun — müşteriye liste olarak asla verme)
 
 ${productList}
 
 ## MAĞAZA BİLGİLERİ
 - Mağaza: ${tenant.store_name}
-- Platform: ${tenant.platform === 'woocommerce' ? 'WooCommerce' : 'Shopify'}
+- Platform: ${platformName}
 - Kargo: ${tenant.shipping_days} iş günü, ${tenant.shipping_company}
 - İade: ${tenant.return_days} gün
 - Destek: WhatsApp veya Telegram
